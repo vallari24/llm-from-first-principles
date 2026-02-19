@@ -29,6 +29,41 @@ But there's a cost. A bigger codebook means:
 
 This is the core tradeoff: **small codebook + long sequences vs. large codebook + short sequences**. Real LLMs land around 32k–100k tokens as the sweet spot. For learning, character-level is perfect — you can see exactly what the model does without tokenization adding mystery.
 
+## Train/Val Split: Why Hold Back Data?
+
+You split the data so you can answer one question: **is the model learning language, or memorizing text?**
+
+Training loss going down just means the model is fitting the data it's seen. That could be real learning, or it could be rote memorization. The validation set is text the model never trains on — if val loss tracks train loss, the model is genuinely picking up patterns. If val loss plateaus while train loss keeps dropping, it's overfitting: memorizing rather than understanding.
+
+The intuition shifts at scale. When you're training on tiny Shakespeare (~1M characters), a small model can memorize the whole thing — the val split is critical. When you're pretraining a real LLM on hundreds of billions of tokens from the internet, the model barely sees the same text twice, so overfitting is less of a worry. The val set becomes more of a health check you glance at periodically, not the thing keeping you honest.
+
+But the habit matters. Having a validation set is cheap (just hold back 10% of data) and the signal it gives you — "is the model still learning or has it started memorizing?" — is one of the most important things to watch during training.
+
+## Chunks and Random Sampling: How Training Actually Works
+
+You never feed the whole dataset into a transformer at once. Not even close. Training works on **small random chunks**.
+
+**Why chunks?** The transformer has a fixed context window (`block_size`). If block_size is 8, the model sees 8 tokens and predicts the next one. Bigger block_size = more context = better predictions, but the cost of attention grows quadratically (every token attends to every other token). So you pick the largest block_size you can afford computationally.
+
+**Why random?** Each training step grabs a random chunk from a random position in the data. If you fed data in order — page 1, then page 2, then page 3 — the model would learn patterns specific to that ordering, and early in training it'd only know how the beginning of the text sounds. Random sampling means every batch is a mix of different parts. The model sees variety on every step and learns general patterns instead of memorizing a sequence.
+
+**At pretraining scale**, same idea, just bigger. Billions of documents, and each training step grabs a batch of random chunks from random documents. The model never processes "the whole internet" — it sees millions of small windows, randomly sampled, across many passes. The randomness is what keeps learning general.
+
+**One subtle thing:** a single chunk gives you multiple training examples, not just one. Take the chunk `"Hello th"` (8 characters). Because each position can only see what came before it, the model is simultaneously learning to predict:
+
+```
+Given "H"           → predict "e"
+Given "He"          → predict "l"
+Given "Hel"         → predict "l"
+Given "Hell"        → predict "o"
+Given "Hello"       → predict " "
+Given "Hello "      → predict "t"
+Given "Hello t"     → predict "h"
+Given "Hello th"    → predict "e"
+```
+
+That's 8 predictions from one chunk, all computed in a single forward pass (not 8 separate runs — that's what makes transformers efficient). A batch of 32 chunks of size 8 means 256 predictions per training step. This is how transformers squeeze so much learning out of each piece of data.
+
 ---
 
 *More sections coming as I work through the video...*
