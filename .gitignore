@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_metadata/
+
+# Data files (large)
+data/shakespeare/input.txt
+
+# OS
+.DS_Store
+
+# Reference repos
+nanoGPT/
+
+# IDE
+.vscode/
+.idea/
