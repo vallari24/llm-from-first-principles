@@ -232,6 +232,111 @@ Decode `[0, 20, 43, 50]` → `"\nHel"` — the start of nonsense Shakespeare.
 
 **The key limitation:** even though the sequence grows, the bigram model only ever uses the LAST token to predict. `"e"` after `"th"` and `"e"` after `"zzz"` produce identical predictions — same row in the table, same scores. That's the problem attention solves next.
 
+## The Training Loop: Nudging Numbers Toward Less Wrong
+
+Training has no magic. It's the same five steps, repeated thousands of times:
+
+**1. Grab random data** — pick random chunks from the training set. Different chunks every time, so the model sees variety.
+
+**2. Predict and measure** — forward pass. Look up the table, get scores, compare against targets, compute loss. PyTorch secretly records every math operation in a "computation graph" so it can work backwards later.
+
+**3. Clear old gradients** — gradients are "which direction should each number move." They need to be reset each iteration, otherwise they'd pile up from previous steps and give wrong directions.
+
+**4. Backpropagation** — the real work. PyTorch walks backward through the computation graph and asks: for every number in the model, if I nudged it up slightly, would loss go up or down, and by how much? That's the gradient. For the 65×65 table, it computes 4225 gradients.
+
+The intuition: if "H" appeared and the model put too little probability on "e" (the right answer), the gradient for the (H, e) cell says "increase this." The gradient for (H, z) says "decrease this."
+
+**5. Update** — nudge every number a small step in the direction that reduces loss:
+
+```
+new_value = old_value - learning_rate × gradient
+```
+
+The learning rate controls step size. Too big → overshoots and never settles. Too small → learns painfully slowly.
+
+After thousands of these cycles — grab random data, predict, measure, figure out which direction to nudge, nudge — the table converges to something that reflects real Shakespeare character patterns. That's all training is.
+
+## B, T, C — Reading Tensor Dimensions
+
+Every tensor in this model has three dimensions, always the same meaning:
+
+- **B (Batch)** — how many independent sequences (e.g., 4)
+- **T (Time)** — how many tokens in each sequence (e.g., 8)
+- **C (Channels)** — how many numbers describe each token (e.g., 65)
+
+A tensor shaped `(4, 8, 65)` reads: "4 sequences, each 8 tokens long, each token described by 65 numbers." Read left to right: which sequence → which position → what information.
+
+## From Averaging to Attention: Tokens Learning to Talk
+
+In the bigram model, tokens are isolated. We want them to communicate — but with a hard rule: **no peeking at the future.** During generation, position 5 can't see positions 6, 7, 8 because those haven't been generated yet. During training we know the full text, but we have to enforce this same constraint so the model doesn't cheat.
+
+### Why not treat all past tokens equally?
+
+Consider predicting the next word in `"The cat sat on the ___"`. The words `"sat"` and `"on"` are very relevant. `"The"` at the start barely matters. Equal averaging blends them all the same, throwing away the signal that some tokens matter more than others. We want the model to learn which tokens to pay attention to.
+
+### The lower triangular matrix: enforcing "no future"
+
+Visualize which positions each token can see:
+
+```
+         pos0  pos1  pos2  pos3
+pos0:    [YES   no    no    no ]   ← only sees itself
+pos1:    [YES  YES    no    no ]   ← sees 0 and itself
+pos2:    [YES  YES   YES    no ]   ← sees 0, 1, itself
+pos3:    [YES  YES   YES   YES ]  ← sees everything before
+```
+
+That's a triangle — the lower part is YES, the upper part (the future) is NO.
+
+### Why -inf? How softmax uses it
+
+Softmax turns numbers into probabilities (positive, sum to 1). Bigger input → bigger probability. But what if you want a position to get **exactly** zero probability? Putting in 0 doesn't work — softmax(0) is still positive (e^0 = 1). But e^(-infinity) = 0. Exactly zero. Guaranteed.
+
+So you put `-inf` in every future position. Softmax turns those into exactly 0 weight. No information leaks from the future, no matter what.
+
+```
+Position 2's scores:   [0.0,  0.0,  0.0,  -inf]
+                        past  past  self   FUTURE
+
+After softmax:         [0.33, 0.33, 0.33,  0.00]
+                        ↑ equal weight on what we CAN see
+```
+
+### The leap: from equal weights to learned weights
+
+Right now all the visible scores are 0.0, giving equal weights. But what if the model could *compute* different scores?
+
+```
+Equal scores:          [0.0,  0.0,  0.0,  -inf]
+After softmax:         [0.33, 0.33, 0.33,  0.00]  ← boring equal average
+
+Learned scores:        [0.1,  0.5,  2.0,  -inf]
+After softmax:         [0.10, 0.15, 0.68,  0.00]  ← pays most attention to itself
+```
+
+Now position 2 pays 68% attention to itself, 15% to position 1, 10% to position 0 — and still exactly 0% to the future. Different situations produce different scores, so the model learns what to pay attention to for each prediction. That's self-attention.
+
+## Positional Embeddings: Teaching the Model "Where"
+
+The token embedding table tells the model **what** each token is — but "e" at position 0 and "e" at position 7 produce the exact same numbers. The model has no concept of order. `"Hello"` and `"olleH"` would look identical.
+
+The fix: a second lookup table, indexed by position instead of token.
+
+```
+Token embedding for "e":      [0.2, -0.5, 0.8, 0.1]   ← always the same
+Position embedding for pos 3:  [0.1,  0.3, -0.2, 0.7]  ← unique to position 3
+Position embedding for pos 6: [-0.4,  0.1,  0.5, -0.3] ← unique to position 6
+
+"e" at pos 3 = token + position = [0.3, -0.2, 0.6, 0.8]
+"e" at pos 6 = token + position = [-0.2, -0.4, 1.3, -0.2]
+```
+
+Different numbers. Now the model can tell them apart. Every token carries both "what I am" and "where I am" in a single vector.
+
+The position embeddings are learned — they start random and get trained alongside everything else. The model figures out useful position representations on its own.
+
+One limitation: the position table has exactly `block_size` rows. If block_size is 8, positions 0-7 are all the model knows. This is part of why the context window is a hard limit.
+
 ---
 
 *More sections coming as I work through the video...*
