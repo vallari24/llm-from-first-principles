@@ -128,23 +128,109 @@ That's the whole model: a lookup table that learns character-pair frequencies. N
 
 ## Cross-Entropy Loss: How the Model Knows It's Wrong
 
-The model outputs 65 scores (one per character). The real next character is, say, `"e"`. The loss function asks one question: **what probability did you assign to the right answer?**
+The model outputs 65 probabilities — one per character. The loss function asks: **how much probability did you put on the correct answer?**
 
-High probability on the right answer → low loss. Low probability → high loss. That's the whole idea.
+High probability on the right answer → low loss. Low probability → high loss.
+
+**Why not just subtract?** You might think: subtract the prediction from the answer, see how far off. But the model outputs 65 probabilities and the target is a single index — they're different kinds of things. It's like a multiple-choice exam with 65 options. You don't measure "how far is your answer from the right one" — you measure "how confident were you in the right answer?"
 
 The formula: `loss = -log(probability of correct answer)`
 
-Why log? Because it makes the penalty scale in a useful way:
-- 100% confident and correct → loss = 0 (perfect)
-- 50% → loss = 0.69
+```
+Model's probabilities: [0.02, 0.01, ..., 0.30, ..., 0.01]
+                                         ↑
+                                    index 47 — the correct answer
+
+Loss = -log(0.30) = 1.2
+```
+
+Why -log? Because of how it scales:
+- 90% confident in correct answer → loss = 0.1 (good)
+- 30% → loss = 1.2
 - 1% → loss = 4.6
 - near 0% → loss explodes toward infinity
 
-Being confidently wrong is punished *far* more than being uncertain. This pushes the model away from confident mistakes.
+Being confidently wrong is punished *far* more than being uncertain.
 
-**Why initial loss is ~4.17:** a random model spreads probability equally across all 65 characters, so each gets ~1/65. And `-log(1/65) = log(65) ≈ 4.17`. This is your sanity check — if your untrained model's loss isn't near 4.17, something is broken.
+With multiple predictions, you average the losses. If you made 2 predictions and the correct answers got 30% and 15% probability: average loss = (-log(0.30) + -log(0.15)) / 2 = 1.55.
 
-**What `F.cross_entropy` does under the hood:** takes raw logits → softmax → probabilities → picks the probability of the correct answer → takes -log. All in one step, for numerical stability.
+**Why initial loss is ~4.17:** a random model spreads probability equally across all 65 characters, so each gets ~1/65. And `-log(1/65) = log(65) ≈ 4.17`. If your untrained model's loss isn't near this, something is broken.
+
+## Forward and Generate: A Complete Walkthrough
+
+These are the two things the model does: **forward** (look up the cheat sheet) and **generate** (use it to write).
+
+### forward — "what does the cheat sheet say?"
+
+The embedding table IS the cheat sheet — a 65×65 table where each row is one character's scores for what comes next. Forward just looks up rows.
+
+Say our input is `"Hi"` → `[20, 47]`:
+
+```
+Look up row 20 ("H") → [2.1, -0.5, 0.8, ..., 3.2, ...]   65 scores
+Look up row 47 ("i") → [0.3,  1.7, -0.2, ..., 0.1, ...]   65 scores
+
+Result shape: (1, 2, 65) — 1 sequence, 2 tokens, 65 scores each
+```
+
+That's all forward does. Look up rows in a table.
+
+During training, we also check "how wrong were we?" If the real next characters were `"i"` and `" "`, cross-entropy checks: for each prediction, how much probability did you put on the correct answer? Average those → that's the loss.
+
+### How targets work — "the input shifted by one"
+
+If the input is `[20, 47]` ("Hi"), the model makes 2 predictions, not 3. Each token predicts what comes after it:
+
+```
+Input:    [20,  47]      "H" and "i"
+           ↓    ↓
+Predicts: [??,  ??]      "what comes after H?" and "what comes after i?"
+Target:   [47,  32]      the actual answers: "i" and " "
+```
+
+Targets are always the input shifted by one position — "what actually came next in the text."
+
+### Sampling — "rolling a weighted die"
+
+Imagine a 65-sided die, but unfair. Side "e" takes up 30% of the surface. Side "z" takes 0.1%. When you roll, "e" comes up far more often, but you *could* land on "z". That's what `torch.multinomial` does — randomly picks one token where each token's chance of being picked equals its probability. This randomness is why the model generates different text each time.
+
+### generate — "write using the cheat sheet, one character at a time"
+
+Start with `idx = [[0]]` (just a newline character).
+
+**Iteration 1:**
+```
+idx = [[0]]
+Forward: look up row 0 → shape (1, 1, 65)
+Take last position → (1, 65) — removes the middle dimension,
+                      just "65 scores for what follows newline"
+Softmax → probabilities
+Roll weighted dice → say we get 20 ("H")
+Append: [[0]] → [[0, 20]]
+```
+
+**Iteration 2:**
+```
+idx = [[0, 20]]
+Forward: look up rows 0 AND 20 → but we only care about the LAST one
+Take last position → 65 scores for "what follows H?"
+Softmax → probabilities
+Roll dice → say 43 ("e")
+Append: [[0, 20]] → [[0, 20, 43]]
+```
+
+**Iteration 3:**
+```
+idx = [[0, 20, 43]]
+Forward: look up rows 0, 20, 43 → only use the LAST one
+Take last position → "what follows e?"
+Roll dice → 50 ("l")
+Append: [[0, 20, 43, 50]]
+```
+
+Decode `[0, 20, 43, 50]` → `"\nHel"` — the start of nonsense Shakespeare.
+
+**The key limitation:** even though the sequence grows, the bigram model only ever uses the LAST token to predict. `"e"` after `"th"` and `"e"` after `"zzz"` produce identical predictions — same row in the table, same scores. That's the problem attention solves next.
 
 ---
 
