@@ -64,6 +64,88 @@ Given "Hello th"    → predict "e"
 
 That's 8 predictions from one chunk, all computed in a single forward pass (not 8 separate runs — that's what makes transformers efficient). A batch of 32 chunks of size 8 means 256 predictions per training step. This is how transformers squeeze so much learning out of each piece of data.
 
+### Why train on all context lengths?
+
+During generation, the model starts with just 1 token. Then it generates the next, and now has context of 2. Then 3. If you only trained on full-length context (always exactly block_size tokens), the model wouldn't know what to do with 1 or 3 tokens of context. By training on every length from 1 up to block_size, the model learns to make the best prediction it can with whatever context it has — because at inference time, it *will* encounter every length.
+
+### Why not make block_size infinite?
+
+Because attention is O(n²). Every token looks at every previous token. Double the context, quadruple the cost:
+
+```
+block_size 128    →    128² =     16,384 attention scores
+block_size 1024   →  1,024² =  1,048,576 attention scores
+block_size 8192   →  8,192² = 67,108,864 attention scores
+```
+
+So block_size is a **compute budget**. You pick the longest context you can afford, knowing anything beyond it is invisible to the model. This is a real limitation — it's why early GPT models would "forget" the beginning of long conversations. Newer models push context to 100k+ tokens with tricks to tame the quadratic cost, but the fundamental tradeoff remains: more context = better understanding = way more compute.
+
+### Batch size: why process multiple chunks at once?
+
+You *could* train on one chunk at a time. It would work. But it's slow for two reasons:
+
+1. **GPUs are parallel machines.** A GPU doing matrix math on 1 chunk vs 32 chunks takes almost the same wall-clock time. Feeding one chunk at a time leaves most of the hardware idle. Batching is how you fill the GPU.
+
+2. **Smoother learning signal.** One chunk gives you a noisy gradient — maybe that chunk was a weird part of the text. Averaging gradients over 32 chunks gives a more stable direction for updating weights. Too small = erratic updates. Too large = wastes memory for diminishing returns.
+
+The tensor shape makes it clear:
+
+```
+x shape: (batch_size, block_size)    e.g. (32, 8)
+         ─────────  ──────────
+         32 chunks,  each 8 tokens long
+```
+
+These are two independent knobs:
+- **batch_size** = how many chunks to process in parallel (limited by GPU memory)
+- **block_size** = how much context each chunk has (limited by O(n²) attention cost)
+
+The model doesn't know or care that chunks are batched together — each chunk is processed independently. Batching is purely a hardware efficiency trick. Running batch_size=1 thirty-two times would give mathematically identical learning to batch_size=32 once (aside from the gradient averaging, which just smooths things out).
+
+## The Bigram Model: What's Actually Happening Inside
+
+**Token** — just a number representing a character. After encoding, `"Hello"` becomes `[20, 43, 50, 50, 53]`. Each number is a token.
+
+**The problem:** given a token, predict which token comes next.
+
+**The solution: a lookup table.** Imagine a 65×65 grid (65 characters in Shakespeare). Row = current character, column = next character. Each cell holds a score — "how likely is this next character given the current one?" Row for "H" might have a high score in the "e" column (because "He" is common) and a low score in the "z" column.
+
+In PyTorch, this table is called an **embedding**: `nn.Embedding(65, 65)` — 65 rows, 65 scores per row. Feed in token 20, get back row 20: 65 raw scores.
+
+**Those raw scores are logits.** Just a word for "unnormalized scores" — they can be any number, positive or negative. They're not probabilities yet. To get probabilities, you pass them through **softmax**, which squishes them into numbers between 0 and 1 that add up to 1:
+
+```
+logits:        [2.1, -0.5, 0.8, ...]   ← raw scores
+    ↓ softmax
+probabilities: [0.4,  0.03, 0.11, ...]  ← 0 to 1, sum to 1
+```
+
+Higher logit = higher probability. The model samples from these probabilities to pick the next token.
+
+**Training = making the table less wrong.** The table starts random — every next character is equally likely. The loss function measures "how surprised was the model by the actual answer?" If the real next character was "e" but the model only gave it 1% probability, that's high loss. Training nudges the table so correct answers get higher scores. Repeat a few thousand times and the table captures which characters tend to follow which.
+
+That's the whole model: a lookup table that learns character-pair frequencies. No memory, no context beyond the single previous character. Everything after this in the video is about adding context.
+
+## Cross-Entropy Loss: How the Model Knows It's Wrong
+
+The model outputs 65 scores (one per character). The real next character is, say, `"e"`. The loss function asks one question: **what probability did you assign to the right answer?**
+
+High probability on the right answer → low loss. Low probability → high loss. That's the whole idea.
+
+The formula: `loss = -log(probability of correct answer)`
+
+Why log? Because it makes the penalty scale in a useful way:
+- 100% confident and correct → loss = 0 (perfect)
+- 50% → loss = 0.69
+- 1% → loss = 4.6
+- near 0% → loss explodes toward infinity
+
+Being confidently wrong is punished *far* more than being uncertain. This pushes the model away from confident mistakes.
+
+**Why initial loss is ~4.17:** a random model spreads probability equally across all 65 characters, so each gets ~1/65. And `-log(1/65) = log(65) ≈ 4.17`. This is your sanity check — if your untrained model's loss isn't near 4.17, something is broken.
+
+**What `F.cross_entropy` does under the hood:** takes raw logits → softmax → probabilities → picks the probability of the correct answer → takes -log. All in one step, for numerical stability.
+
 ---
 
 *More sections coming as I work through the video...*
