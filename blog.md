@@ -698,6 +698,379 @@ Attention creates a **direct connection** between any two tokens, regardless of 
 
 This also made training **parallelizable**. RNNs process tokens sequentially — you can't compute token 5 until token 4 is done. Attention computes all positions simultaneously (it's matrix multiplies). This is why transformers could scale to billions of parameters on GPUs while RNNs couldn't.
 
+## Attention as a Communication Graph
+
+Forget neural networks for a moment. Think of a **directed graph**: nodes connected by edges, where each edge has a direction and a weight.
+
+### Tokens are nodes, attention is edges
+
+Each token in the sequence is a node. The question "who can communicate with whom" is a question about graph structure — which edges exist. Batches never talk to each other — with batch_size=4 and block_size=8, you have 4 completely separate pools of 8 nodes. Communication only happens within each pool.
+
+```
+5 tokens = 5 nodes:  [The]  [cat]  [sat]  [on]  [the]
+```
+
+In causal (decoder) attention, edges only point backward. Each node receives information only from past nodes:
+
+```
+"The": ← (only itself)
+"cat": ← "The"
+"sat": ← "The", ← "cat"
+"on":  ← "The", ← "cat", ← "sat"
+"the": ← "The", ← "cat", ← "sat", ← "on"
+```
+
+The lower triangular mask IS this graph's adjacency matrix. 1 = edge exists, 0 = no edge. The `-inf` masking before softmax is how you enforce this topology — zeroing out connections that shouldn't exist.
+
+### Edge weights = attention scores
+
+The graph structure says *who can talk*. The attention weights say *how much to listen*. After q·k + softmax, each edge gets a weight:
+
+```
+"on" receives:
+  0.10 × v["The"]  ──→ ┐
+  0.45 × v["cat"]  ──→ ├──→  weighted sum  ──→  "on"'s new representation
+  0.15 × v["sat"]  ──→ ┤
+  0.30 × v["on"]   ──→ ┘
+```
+
+Each node collects **messages** from its neighbors (value vectors, scaled by attention weight), sums them, and that becomes its updated representation. After attention, "on" isn't just "on" anymore — it carries information blended from "The" (10%), "cat" (45%), "sat" (15%), and itself (30%).
+
+The weights are **data-dependent** — different input tokens produce different attention patterns, different edge weights. The graph shape stays the same (triangular), but the strength of every edge changes based on the actual content.
+
+### Why this framing matters: you can invent variations by changing the graph
+
+Once you see attention this way, every variant is just a different answer to three questions:
+
+**1. What's the graph shape?** (who can talk to whom)
+- **Causal (GPT):** triangular — each node sees only the past
+- **Full (BERT):** fully connected — every node sees every other. No mask. Used when you have the whole input upfront (classification, not generation)
+- **Sparse (Longformer):** each node sees a local window (e.g., 128 nearest tokens) plus a few global tokens. Reduces O(n²) to O(n)
+- **Cross-attention:** queries from sequence A, keys/values from sequence B. Nodes in A have edges to nodes in B. Used in translation, image captioning
+
+**2. How are edge weights computed?** (how relevant is each connection)
+- **Dot-product:** q·k — standard transformer
+- **Relative position:** weight depends on distance between nodes, not absolute position
+- **Linear attention:** approximate softmax to avoid O(n²)
+
+**3. What flows along edges?** (what gets communicated)
+- **Values:** linear projection of input — standard
+- **Gated values:** multiply by a learned gate that amplifies or suppresses parts of the message
+
+The transformer is one specific answer to these three questions. But the framework is general — and most attention research is exploring different answers to one of these three.
+
+### Attention has no notion of space or position
+
+The dot product `q[i] · k[j]` only looks at the **content** of two vectors. It doesn't know that position 2 and position 0 are 2 apart, or that one comes before the other. If you scrambled the token order, the dot products would be exactly the same — just rearranged in the attention matrix. Attention treats tokens like **items in a bag**, not elements in a sequence.
+
+This is a problem because word order matters — `"The dog bit the man"` and `"The man bit the dog"` are the same bag of words with very different meanings. Without position information, attention computes identical scores for both because the same tokens produce the same queries and keys.
+
+This is why positional embeddings exist. By adding position information to the token embedding *before* computing Q and K, position gets baked into the queries and keys, making the dot products position-aware. But this is something we had to **add** — attention didn't come with it.
+
+And this is exactly what makes attention so general. It's a **content-based communication mechanism over a set of vectors** that assumes nothing about what those vectors represent. Text, image patches, molecular atoms, chess moves — attention doesn't care. You add structure by choosing how to encode position: sequential for text, 2D grid for images, 3D for video, graph coordinates for molecules. Attention just operates on whatever vectors you give it. This is why the same architecture works across domains that look nothing alike.
+
+### How attention differs from convolution
+
+Convolution is also a communication mechanism — but with a **fixed-size sliding window** (e.g., 3 tokens wide), the **same learned weights** at every position, and **built-in spatial awareness** (weight 0 always means "left neighbor"). It's a fixed local graph with static edges.
+
+Attention is the opposite: **global** (any token can attend to any other), **data-dependent** (weights change based on content), and **position-unaware** (must be added). Convolution excels where local patterns matter (images — a cat's ear is always near its head). Attention excels where dependencies are long-range and unpredictable (language — subject and verb can be 20 tokens apart). Same message-passing framework, different design choices.
+
+### Encoder vs decoder: when to mask
+
+The causal mask exists to prevent cheating — seeing future tokens that won't exist at inference time. Whether you need it depends on one question: **are you generating output one step at a time?**
+
+**Decoder (causal mask):** the model generates sequentially — predict the next token/item given everything so far. Text generation, music generation, "what will this user watch next?" (SASRec). The future doesn't exist yet, so the model must not see it during training either. Triangle graph.
+
+**Encoder (no mask):** the model receives the complete input and produces a single output — a classification, an embedding, a score. Sentiment analysis, user taste modeling from full history (BERT4Rec), item similarity. Every element should see every other because the full input exists upfront. Fully connected graph.
+
+The mask isn't about "language vs not language." It's about "generating sequentially vs understanding a complete input." When designing an architecture, ask: does step N depend on step N+1 existing? If yes, mask. If no, don't.
+
+**Cross-attention** is a third option — for when two different sequences need to interact. Queries come from sequence A, keys and values from sequence B. Translation: the French decoder queries against the English encoder. Image captioning: caption words query against image patches. Recommendations with context: user actions query against item descriptions. The full original transformer uses all three: encoder (self-attention, no mask) processes the source, decoder (self-attention, causal mask) generates the output, and cross-attention (in the decoder) lets each generated token look at the full source. GPT's key insight was dropping the encoder and cross-attention entirely — just a stack of decoder blocks. It works because the "source" and "target" are the same text stream: predict the next token given everything before it. No separate input to encode, no two sequences to bridge. This simplification made the architecture dramatically simpler to scale.
+
+## Scaled Attention: Why Divide by sqrt(d_k)
+
+A dot product is a sum of element-wise multiplications. More dimensions = more terms = larger magnitude. With head_size=64, the dot product of two random vectors has variance ~64, meaning scores land around ±8 instead of ±1. Large scores push softmax into saturation — one token gets ~100% weight, everything else gets ~0%. Two things break: the model can't blend information from multiple tokens (attention becomes a hard lookup), and gradients vanish (softmax at saturation is nearly flat, so backpropagation can't figure out which direction to nudge).
+
+The fix: `scores = q @ k.T / sqrt(head_size)`. Dividing by sqrt(64) = 8 exactly counteracts the variance growth, keeping scores around ±1 regardless of dimension. It's the same idea as temperature — setting it so softmax stays in its useful range where weights are smooth and gradients flow. Without scaling, the model would still work mathematically, but training would be slow and unstable.
+
+## The Attention Formula: Reading It After Understanding It
+
+```
+Attention(Q, K, V) = softmax(Q·Kᵀ / √d_k) · V
+```
+
+After everything above, every piece of this formula should feel familiar. Reading right to left, inside out:
+
+1. **Q·Kᵀ** — every query dot-producted with every key. Produces the (T, T) score matrix: "how relevant is each token to each other token?" This is the data-dependent edge weight computation in the graph.
+
+2. **/ √d_k** — scale the scores down by the square root of the key dimension. Without this, larger dimensions produce larger dot products, which push softmax into saturation. This keeps gradients healthy regardless of head size.
+
+3. **softmax(...)** — turn raw scores into weights that are positive and sum to 1. The causal mask (−∞ on future positions) is applied before this step, so future tokens get exactly zero weight. This is where the exponential amplification happens — high scores get disproportionately more weight.
+
+4. **· V** — weighted sum of values using those weights. Each token's output is a blend of value vectors from the tokens it found relevant. This is the message-passing step — information flows along the weighted edges of the graph.
+
+The whole formula in one sentence: compute relevance between all pairs of tokens, normalize into weights, and use those weights to blend information. Everything else — the mask, the three projections, the scaling — is engineering to make this work reliably at scale.
+
+## Why LLMs Lose the Middle: Self-Attention at Scale
+
+Everything above uses `block_size=8`. Attention works beautifully at that scale. But real models have context windows of 100k+ tokens — and that's where a well-known problem emerges. LLMs pay the most attention to the **beginning** and **end** of the context, and struggle with information buried in the **middle**. The mechanism we just learned explains why.
+
+### Softmax is a competition, and the middle loses
+
+Each row of the attention matrix sums to 1.0 — softmax enforces this. With 8 tokens, the weight is split among 8 positions. Plenty to go around.
+
+Scale to 100k tokens and that same 1.0 is split across **100,000 positions**. Softmax's exponential amplification — the thing that makes attention sharp — now works against you. A few high-scoring keys grab most of the weight, and everything else gets squeezed toward zero. A moderately relevant token in the middle that would've gotten 15% weight in an 8-token window gets 0.001% in a 100k-token window. It's not ignored on purpose — it's **drowned out** by the competition.
+
+### Why the end of context gets high attention: positional decay
+
+Karpathy's video uses a learned position lookup table. Modern models use **rotary position embeddings (RoPE)**, which have a built-in property: the Q·K dot product **decays with distance**. The further apart two tokens are, the lower their attention score, all else being equal.
+
+The token being generated is always at the end. So tokens near the end — recent context — get a natural positional boost. That's the right side of the U-shape.
+
+### Why the beginning gets high attention: learned bias, not math
+
+The positional decay explains the end, but not the beginning. The beginning is far from the current token too — so why does it get special treatment?
+
+**Training.** During pretraining, the model sees billions of examples where the first tokens carry structural information — document titles, topic sentences, headers, system prompts. The model learns: "the beginning usually tells me what this whole thing is about." This isn't from the attention formula — it's a **learned bias** baked into the Q, K, V weight matrices through gradient descent.
+
+### Two different effects making one U-shape
+
+```
+BEGINNING: high attention  ←  learned bias ("start = important structure")
+MIDDLE:    low attention   ←  far from current token + nothing special learned
+END:       high attention  ←  positional proximity (RoPE decay)
+```
+
+### Can the model attend to the middle?
+
+Yes — mechanically, nothing prevents it. If a key in the middle produces a huge Q·K dot product, softmax will give it high weight. And sometimes it does. The U-shape is a **statistical tendency across many inputs**, not a hard rule for every single attention computation.
+
+But the model has to *learn* to look at the middle, and training gives it weak signal to do so. Most training documents are shorter than the max context window. When the model does see long contexts during training, the critical information usually sits near the beginning (document structure) or near the end (recent context). The middle of a 100k-token context is rarely where the answer lives in training data. So the Q and K weight matrices never get strongly trained to produce high scores for "middle of a very long context."
+
+The attention formula doesn't create the U-shape. **Positional decay** explains the right side. **Training distribution** explains the left side. The middle loses not because the mechanism blocks it, but because nothing pushes the learned weights to favor it.
+
+### The practical consequence
+
+This connects directly to the context window discussion. In a long conversation with an AI coding agent:
+
+- **System prompt** sits at the beginning → high attention (good)
+- **Your latest message** sits at the end → high attention (good)
+- **Important instructions from 30 messages ago** → buried in the middle → low attention (bad)
+
+The fix isn't a bigger context window — it's keeping context lean, or re-stating important information so it moves to the end where attention is strong. The same self-attention mechanism that makes transformers powerful at short range creates this blind spot at long range.
+
+## Multi-Head Attention: Why One Head Isn't Enough
+
+A single attention head computes one set of Q, K, V projections. That means it learns one notion of "relevant" — maybe it learns that verbs attend to their subjects. But language has many simultaneous relationships. A word like "it" needs to figure out: what noun does it refer to? What adjective described that noun? What action is being done to it? One attention pattern can't capture all of these at once.
+
+**Multi-head attention** runs multiple heads in parallel, each with a smaller dimension, then concatenates the results:
+
+```python
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+```
+
+### The math stays the same size
+
+With `n_embd=32`:
+
+```
+Single head:  1 head × 32 dims = 32-dim output
+Multi head:   4 heads × 8 dims = 32-dim output  (same!)
+```
+
+Each head is smaller individually, but collectively they cover more ground because they attend to different things. `torch.cat` glues them back into the same 32-dim vector. The downstream layers see the same shape — they don't know or care how many heads produced it.
+
+### What different heads learn
+
+Each head develops its own Q, K, V matrices through training. Since they're initialized randomly and updated independently, they naturally specialize:
+
+- **Head 1** might learn syntactic relationships — subjects attending to verbs
+- **Head 2** might learn positional patterns — nearby tokens attending to each other
+- **Head 3** might learn semantic grouping — related concepts attending across distance
+- **Head 4** might learn structural patterns — punctuation attending to clause boundaries
+
+We don't tell the heads what to specialize in. Gradient descent discovers useful patterns because different attention patterns reduce loss in different ways. The diversity comes from random initialization + the pressure to collectively explain the data.
+
+### Why not just make one big head?
+
+A single head with dimension 32 computes one (T, T) attention matrix — one set of weights for who talks to whom. Four heads with dimension 8 compute four different (T, T) attention matrices. More heads = more distinct communication patterns per layer.
+
+The tradeoff: each head has fewer dimensions to work with (8 instead of 32), so each individual head captures less nuance. But the ensemble of specialized heads outperforms one generalist head. In the notebook, multi-head attention (4 heads × 8 dims) drops val loss from ~2.40 (single-head) to ~2.28 — a meaningful improvement from the same parameter count.
+
+## FeedForward: Letting Tokens Think
+
+Attention lets tokens **communicate** — gather information from other tokens. But after gathering, each token needs to **process** what it collected. That's the feedforward layer.
+
+```python
+class FeedForward(nn.Module):
+    def __init__(self, n_embd):
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+```
+
+It's remarkably simple: a linear layer followed by ReLU. But it serves a critical role.
+
+### Attention = communication, feedforward = computation
+
+Think of it as a two-phase process:
+
+```
+x → MultiHeadAttention → FeedForward → output
+    (tokens talk)        (tokens think)
+```
+
+After multi-head attention, each token's vector is a blend of information from other tokens. The feedforward layer lets each token independently process that blended information — transform it, extract patterns from it, prepare it for the next layer's attention.
+
+Crucially, feedforward operates **per-token independently**. Position 3's feedforward computation doesn't see position 5's. All the cross-token communication happened in attention. Feedforward is purely "given what I've gathered, what do I make of it?"
+
+### Why ReLU matters
+
+Without the non-linearity, stacking attention + linear layer + attention + linear layer would collapse into something equivalent to one big attention + one linear layer. Linear operations compose into linear operations — you'd get no benefit from depth.
+
+ReLU (`max(0, x)`) breaks linearity. It zeros out negative values and passes positive values through. Simple, but it means the combination of layers can learn patterns that no single layer could represent. This is what makes deep networks "deep" in a meaningful sense — each layer builds non-linear features on top of the previous layer's non-linear features.
+
+### The result
+
+Adding feedforward after multi-head attention drops val loss from ~2.28 to ~2.24 in the notebook. A small improvement — but this is the fundamental building block. In a real transformer, this attention + feedforward pair gets repeated many times (GPT-3 has 96 layers), and the feedforward layer typically has 4× the hidden dimension (e.g., n_embd=768, feedforward inner dim=3072). At scale, the feedforward layers contain the majority of the model's parameters and are where much of the "knowledge" is stored.
+
+### The transformer block
+
+Attention + feedforward together form one **transformer block** — the repeating unit of every transformer:
+
+```
+Input
+  ↓
+  Multi-Head Attention   ← tokens communicate
+  ↓
+  FeedForward            ← tokens compute
+  ↓
+Output
+```
+
+Stack N of these blocks and you get a transformer. GPT-2 stacks 12, GPT-3 stacks 96. Each block refines the representation — early blocks might capture simple patterns (common character pairs), middle blocks might capture grammar, later blocks might capture meaning. The depth is what gives transformers their power.
+
+## Watching the Loss Drop: What Each Technique Actually Buys You
+
+Theory is one thing. Let's look at what actually happens when you train a character-level Shakespeare model (65-character vocabulary, block_size=8, n_embd=32) and stack these techniques one at a time. Each model trains for 5,000 steps on the same data. The number to watch is **validation loss** — how well the model predicts characters it's never trained on.
+
+**The baseline: random guessing**
+
+Before any training, the model spreads probability equally across all 65 characters. Each character gets 1/65 chance. Loss = -log(1/65) ≈ **4.17**. This is the "I know nothing" starting point. Any model that trains at all should beat this immediately.
+
+### Step 1: Bigram model → val loss ~2.58
+
+The simplest possible model. A 65×65 lookup table — given the current character, what's the probability of each next character? No context beyond the single previous character.
+
+```
+"H" → probably "e" or "a" or "i" (common after H)
+"q" → almost certainly "u"
+" " → could be anything (space precedes many characters)
+```
+
+Loss drops from 4.17 to **~2.58**. That's a huge jump from random, but the ceiling is low. The model knows that "q" is followed by "u" and "t" is often followed by "h", but it can't learn "the" as a unit because it only sees one character back. It generates text like:
+
+```
+MADOY'
+'tr thSStlleel, noisuan os
+```
+
+Recognizable character pairs, but no words, no structure.
+
+**What it learned:** character-pair frequencies. "t→h" is common, "z→z" is rare.
+**What it can't learn:** anything requiring more than one character of context.
+
+### Step 2: Single-head self-attention → val loss ~2.40
+
+Now each token can look at all previous tokens (up to block_size=8) and decide how much to attend to each one. The model also gets positional embeddings — it knows *where* each token is, not just *what* it is.
+
+Loss drops from 2.58 to **~2.40**. The improvement is immediate. With 8 characters of context, the model can start learning short word patterns and common sequences.
+
+```
+An
+Pur veay quy woungca heane I poay th poudt;
+Manikill, UNO wicke ale ln wat byovey
+```
+
+You can see word-like structures emerging — "the", "heane" (almost "heard"), "wicke" (almost "wicked"). The model is learning that certain *sequences* of characters go together, not just pairs.
+
+**What it learned:** which past tokens matter for the current prediction. In "th", the "t" strongly attends to itself and the "h" attends back to "t" — learning that this pair behaves as a unit.
+**What it can't learn:** multiple types of relationships simultaneously. The single attention head has one pattern — it can't track syntax AND semantics at the same time.
+
+### Step 3: Multi-head attention (4 heads) → val loss ~2.28
+
+Same total dimension (32), split into 4 independent heads of 8 dimensions each. Each head develops its own attention pattern.
+
+Loss drops from 2.40 to **~2.28**. The model can now track multiple relationships in parallel — one head might focus on nearby characters, another on recurring patterns further back.
+
+```
+QARENSLOCOFOR:
+Ta.
+Martin,
+Ox Jouatephiten!
+Cius! Balland o bin a and wor'd
+```
+
+More structure. "Martin" is a real name. "and wor'd" almost looks like Shakespeare. The colon-after-name pattern (speaker labels in the play) is emerging. Multiple heads let the model simultaneously notice "this looks like a name" and "a colon usually follows."
+
+**What it learned:** multiple simultaneous attention patterns. Different heads specialize — maybe one learns character adjacency, another learns word boundaries, another learns the speaker-label pattern.
+**What it can't learn:** non-linear combinations of the information it gathers. Attention is linear — it's weighted averaging. The model can blend information from multiple tokens, but can't do complex transformations on that blend.
+
+### Step 4: Add feedforward → val loss ~2.24
+
+After attention gathers information, a feedforward layer (linear + ReLU) lets each token process what it collected.
+
+Loss drops from 2.28 to **~2.24**. A smaller absolute improvement, but this is the piece that unlocks depth — without non-linearity, stacking more layers wouldn't help.
+
+**What it learned:** non-linear patterns in the attended information. After attention blends nearby characters together, feedforward can detect patterns in that blend that a linear operation would miss.
+
+### The full progression
+
+```
+Random guessing (no training)          4.17
+                                        ↓  -1.59  (learning character pairs)
+Bigram (lookup table, no context)      2.58
+                                        ↓  -0.18  (8 tokens of context, learned weights)
++ Single-head attention                2.40
+                                        ↓  -0.12  (4 parallel attention patterns)
++ Multi-head attention                 2.28
+                                        ↓  -0.04  (non-linear processing)
++ FeedForward                          2.24
+```
+
+### What the numbers tell you
+
+**The biggest single win is the dumbest technique.** Going from random to a lookup table (bigram) drops loss by 1.59. That's just memorizing which characters follow which — no intelligence, no context, pure statistics. Most of the "easy" prediction in language comes from local patterns. If you see "q", you already know the next letter.
+
+**Context is the second biggest win.** Adding attention (0.18 drop) gives the model 8 characters of memory instead of 1. It can now learn "the" and "ing" and "tion" as patterns, not just character pairs. The more context you give a model, the better it predicts — this is why real models push context windows to 100k+ tokens.
+
+**Parallelism helps more than non-linearity at this scale.** Multi-head (0.12 drop) beats feedforward (0.04 drop). Having multiple attention patterns — multiple ways to look at the same context — matters more than having non-linear processing, at least for this tiny model. At scale, feedforward becomes much more important because it's where the model stores factual knowledge.
+
+**Diminishing returns at each step — but they compound.** Each technique adds less than the previous one. But this is a toy model with 32 embedding dimensions and 8 tokens of context. Real transformers stack 96 attention+feedforward blocks with 12,288-dimensional embeddings and 100k tokens of context. The same techniques that gave us 4.17 → 2.24 on character-level Shakespeare give us GPT-4 on the full internet. The architecture is identical — just scaled up.
+
+### What the generated text tells you
+
+The loss numbers are abstract. The generated text makes the improvement visceral:
+
+**Bigram (2.58):** `MADOY' 'tr thSStlleel, noisuan os` — character soup with occasional recognizable pairs.
+
+**Single-head (2.40):** `Pur veay quy woungca heane I poay th poudt` — word-shaped blobs. You can almost read it.
+
+**Multi-head (2.28):** `Martin, Ox Jouatephiten! Cius! Balland o bin a and wor'd` — real names appear, punctuation in roughly the right places, "and" used correctly.
+
+**Multi-head + feedforward (2.24):** Similar quality to multi-head at this scale, but the foundation is now set for stacking — this attention+feedforward block is the repeating unit that, when stacked 12–96 times with larger dimensions, produces coherent paragraphs.
+
+Each technique doesn't just lower a number — it unlocks a qualitatively different *kind* of pattern the model can learn. Bigram learns pairs. Attention learns sequences. Multi-head learns simultaneous relationships. Feedforward learns non-linear transformations. Stack them and scale them up, and you get language.
+
 ---
 
 *More sections coming as I work through the video...*
