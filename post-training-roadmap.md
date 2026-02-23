@@ -11,7 +11,7 @@ Same as pre-training: watch → understand → build from scratch. "What I canno
 Turn a base model (autocomplete) into a chatbot (instruction-following).
 
 ### Watch first
-- **Karpathy's "Deep Dive into LLMs"** ~1:30:00–2:00:00 (SFT section)
+- **Karpathy's "Deep Dive into LLMs"** ~1:01:00–2:14:00 (post-training data, hallucinations, knowledge, then SFT→RL transition)
   https://www.youtube.com/watch?v=7xTGNNLPyMI
 
 ### Read
@@ -59,7 +59,7 @@ Runs on Mac Intel CPU. ~3 min for pre-training, ~1 min for SFT.
 Teach the model what "good" means using human preferences + reinforcement learning.
 
 ### Watch first
-- **Karpathy's "Deep Dive into LLMs"** ~2:00:00–2:45:00 (RLHF section)
+- **Karpathy's "Deep Dive into LLMs"** ~2:14:42–3:09:39 (RL, DeepSeek-R1, AlphaGo, RLHF)
   https://www.youtube.com/watch?v=7xTGNNLPyMI
 
 ### Read
