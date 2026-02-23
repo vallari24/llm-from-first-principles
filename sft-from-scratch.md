@@ -21,8 +21,9 @@
 13. [Inference: What Happens When You Chat](#inference-what-happens-when-you-chat)
 14. [Before vs. After](#before-vs-after)
 15. [Catastrophic Forgetting: The Cost of New Behavior](#catastrophic-forgetting-the-cost-of-new-behavior)
-16. [What SFT Doesn't Do](#what-sft-doesnt-do)
-17. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
+16. [The Decision Guide: Building Your Own SFT Pipeline](#the-decision-guide-building-your-own-sft-pipeline)
+17. [What SFT Doesn't Do](#what-sft-doesnt-do)
+18. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
 
 ---
 
@@ -370,6 +371,8 @@ Position 0 sees token 65, should predict token 23. Same shift-by-one logic as pr
 
 Now the key difference. We set every label in the user portion to `-100`:
 
+![Loss mask visualization — gray tokens are masked, blue tokens are trained](diagrams/sft_loss_mask.png)
+
 ```
 input_ids:  [65,   23,   56,   47,   58,   43,   67,   66,   19,   53,   53,   42  ]
             <|user|> W     h     a     t     ...   <|end|> <|asst|> G     o     o     d
@@ -421,6 +424,8 @@ The crucial point: **the model reads everything, but is only graded on assistant
 ### Why mask user tokens at all?
 
 Without masking, half the gradient would come from predicting user messages — teaching the model to write what users say. That's useless at inference (users write their own messages) and it dilutes the training signal. Masking focuses 100% of the learning on the only part that matters: generating good responses.
+
+![With vs without loss masking](diagrams/sft_masking_comparison.png)
 
 ### Two masks, two purposes
 
@@ -570,6 +575,10 @@ for step in range(1000):
 
 1,000 steps. 40 examples. The loss drops from ~4.0 to ~0.3 — the model quickly learns the conversation pattern.
 
+![SFT training loss curve](diagrams/sft_training_loss.png)
+
+Notice the shape: the model learns the chat format fast (the steep drop in the first ~200 steps), then gradually memorizes specific responses. This is typical of SFT on small datasets — format is learned quickly, content takes longer.
+
 ---
 
 ## Inference: What Happens When You Chat
@@ -656,11 +665,7 @@ SFT isn't free. Fine-tuning shifts the model's weights toward the conversation f
 
 We can measure it by checking the model's loss on the original Shakespeare validation data:
 
-```
-Shakespeare validation loss:
-  Base model: 2.12
-  SFT model:  2.31  (+0.19)  ← measurably worse at Shakespeare
-```
+![Catastrophic forgetting — SFT model is measurably worse at Shakespeare](diagrams/sft_catastrophic_forgetting.png)
 
 The SFT model traded some language modeling ability for instruction-following ability. The weights can't fully serve both purposes.
 
@@ -670,6 +675,131 @@ In production, teams mitigate this with:
 - **Lower learning rates** — smaller updates mean less overwriting
 
 > **Key insight:** Every new behavior has a cost. SFT teaches the model *what to do*, but it slightly forgets *what it knew*. This trade-off is fundamental — it's why parameter-efficient methods like LoRA exist.
+
+---
+
+## The Decision Guide: Building Your Own SFT Pipeline
+
+You understand the mechanics. Now the harder question: how do you make the right choices when building your own SFT pipeline? Every decision below involves a tradeoff. Here's how to reason about each one.
+
+### How much data do you need?
+
+The short answer: less than you think, if it's good.
+
+SFT isn't teaching new knowledge — the model already learned that during pre-training. SFT is teaching a *behavior*: "when someone asks you something, respond helpfully." Behaviors are learned from fewer examples than knowledge.
+
+| Goal | Dataset size | Why |
+|---|---|---|
+| Teach the chat format | ~100-500 examples | The model just needs to learn the structural pattern |
+| Teach a specific persona or domain | ~1K-5K examples | More variety needed to generalize |
+| Production-quality instruction-following | ~5K-50K (filtered) | Diversity across task types matters |
+
+The InstructGPT insight that surprised everyone: 13K examples was enough for a 175B parameter model. But those 13K were written by carefully selected human labelers. One high-quality example is worth more than a hundred noisy ones.
+
+**The practical test:** generate 5-10 responses from your SFT model on prompts *not* in the training data. If the model follows the format but gives mediocre answers — your SFT is working, and quality improvement is a job for RLHF/DPO, not more SFT data. If the model doesn't follow the format at all — you need more diverse examples of the format.
+
+### Choosing the learning rate
+
+This is the most consequential hyperparameter in SFT.
+
+![Learning rate comparison — too high destroys knowledge, too low barely learns](diagrams/sft_learning_rate_comparison.png)
+
+**Too high (e.g. same as pre-training):** The model learns the chat format fast but overwrites pre-trained knowledge. You'll see unstable loss curves with spikes, and the model may produce incoherent outputs that happen to follow the chat template. Catastrophic forgetting gets severe.
+
+**Too low:** The model barely moves from its pre-trained behavior. After 1,000 steps it still autocompletes instead of responding to instructions. You're wasting compute.
+
+**The sweet spot** is typically **2x-10x lower than the pre-training learning rate**. For our model: pre-training used 3e-4, SFT uses 1e-4. For production models pre-trained at 1e-4, SFT often uses 1e-5 to 5e-5.
+
+**A practical heuristic:** start at 1/3 of your pre-training LR. If the loss drops smoothly and the model generates coherent responses after ~200 steps, you're in the right range. If the loss is jumpy, halve the LR. If the loss barely moves after 500 steps, double it.
+
+### When to stop training
+
+This is where SFT gets counterintuitive. Unlike pre-training, **lower loss doesn't always mean a better model.**
+
+The InstructGPT team found that validation loss started going *up* after just 1 epoch — the model was overfitting by the numbers. But they kept training for 16 epochs, and human raters kept preferring the responses more and more. Why?
+
+Validation loss measures "can you predict the exact next token in a held-out conversation?" But that's not what you actually care about. You care about: does the model follow instructions? Is the response helpful? A response can differ from the reference and still be *better*.
+
+**What to watch instead:**
+
+1. **Manual spot-checking** — the most reliable signal. Every 200-500 steps, generate responses to 10-20 test prompts (mix of seen and unseen). Read them. Are they following the format? Are they coherent? This is what OpenAI used to select their final SFT model.
+
+2. **Format compliance rate** — what percentage of responses start with a coherent answer and end with `<|end|>`? This should climb quickly and plateau.
+
+3. **Training loss (with caveats)** — useful for catching problems (loss going *up* means something is broken, spikes mean LR is too high), but not useful as a selection criterion.
+
+**A reasonable stopping rule:** train for 2-5 epochs over your dataset. Checkpoint every epoch. Pick the checkpoint where manual evaluation looks best, not where loss is lowest.
+
+### With or without loss masking?
+
+Always use masking. But it's worth understanding what happens without it, so you can debug if you accidentally skip it.
+
+**Without masking:** the model trains on predicting both user and assistant tokens. ~50% of the gradient comes from learning to generate user messages. The model may start producing outputs like `"User: Tell me about love\nAssistant: Love is..."` — it learned to write the entire conversation, including the user's part. At inference, when you prompt with `<|assistant|>`, the model might generate user messages instead of responding.
+
+**With masking:** 100% of the gradient goes toward generating good responses. The model reads user tokens (they flow through attention) but is only graded on what it generates. Cleaner, faster convergence.
+
+**The one exception:** some teams train *without* masking intentionally when they want the model to learn to simulate conversations (e.g., for synthetic data generation). But for building a chatbot, always mask.
+
+### How to evaluate SFT quality
+
+Loss alone is a poor signal. Here's a practical evaluation framework:
+
+**1. Format compliance (automated)**
+```python
+# After generating a response, check:
+# - Does it contain content after <|assistant|>?
+# - Does it stop at <|end|> (not run on forever)?
+# - Does it NOT generate <|user|> tokens (it shouldn't write user messages)?
+```
+
+**2. Generalization test (manual, most important)**
+
+Test on prompts the model never saw during training. If your SFT dataset is about customer service, try:
+- In-domain unseen: new customer service questions
+- Near-domain: general helpfulness questions
+- Out-of-domain: completely unrelated instructions
+
+If the model handles in-domain unseen prompts well, SFT is working. If it also handles near-domain, it generalized the format — not just the content. That's what you want.
+
+**3. Regression check (automated)**
+
+Measure loss on a held-out set from the pre-training data. If it increased by more than ~10-15%, catastrophic forgetting is getting severe. Consider lowering the learning rate or adding pre-training data to your SFT mix.
+
+### Failure modes and how to fix them
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Model ignores chat format, just autocompletes | Too few training steps or LR too low | Train longer or increase LR |
+| Model follows format but outputs are incoherent gibberish | LR too high — destroyed pre-trained knowledge | Lower LR, restart from pre-trained checkpoint |
+| Model memorizes training examples verbatim | Too many epochs on too small a dataset | Add more diverse examples, or stop earlier |
+| Model generates user messages in its response | Loss masking not applied correctly | Debug your mask — check that all labels before `<|assistant|>` are -100 |
+| Good on training prompts, bad on unseen prompts | Overfitting to specific prompts | Add more diverse prompts (not more responses per prompt) |
+| Shakespeare quality dropped significantly | Too many SFT steps or LR too high | Mix in pre-training data, use LoRA, or reduce epochs |
+
+### Data quality checklist
+
+Before training, audit your dataset:
+
+- **Consistent format** — every example follows the same chat template exactly. One missing `<|end|>` token can confuse the model.
+- **Response quality** — the model will imitate your data. If your responses are mediocre, the SFT model will be mediocre. This is not something more data fixes.
+- **Prompt diversity** — 50 examples of "write a poem" teach less than 5 examples each of 10 different task types. Breadth of prompts matters more than depth.
+- **Appropriate length** — responses should be similar in length to what you want at inference. If all training responses are 3 sentences, the model will learn to generate ~3 sentences.
+- **No contradictions** — if one example says "I am a helpful assistant" and another says "I am a Shakespearean poet," the model will randomly pick between them. Be consistent about what the model is.
+
+### Putting it together: a minimal SFT recipe
+
+If you're building SFT from scratch, here's the sequence:
+
+1. **Start with a pre-trained model** that generates coherent text in your domain
+2. **Write 50-100 high-quality examples** by hand — these set the tone and format
+3. **Expand to 500-5K examples** synthetically (use a stronger model) or via careful collection
+4. **Filter aggressively** — remove duplicates, low-quality responses, and anything off-format
+5. **Train for 2-3 epochs** at 1/3 of the pre-training LR
+6. **Evaluate manually** on 20+ unseen prompts after each epoch
+7. **Pick the best checkpoint** based on manual eval, not loss
+8. **Check regression** on pre-training data to monitor forgetting
+
+This gets you a model that follows instructions. Quality improvement — making responses *good*, not just *formatted* — is the job of RLHF or DPO.
 
 ---
 
@@ -741,6 +871,8 @@ Generate 100K synthetic SFT examples
     → Train on the remaining 5K hardest examples
     → Result: model learns more from less data
 ```
+
+![Data scaling — filtered data keeps improving while unfiltered data plateaus](diagrams/sft_data_scaling.png)
 
 ### Quantity vs. quality: the pendulum swung
 
