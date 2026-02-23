@@ -23,6 +23,9 @@
 15. [Catastrophic Forgetting: The Cost of New Behavior](#catastrophic-forgetting-the-cost-of-new-behavior)
 16. [The Decision Guide: Building Your Own SFT Pipeline](#the-decision-guide-building-your-own-sft-pipeline)
 17. [What SFT Doesn't Do](#what-sft-doesnt-do)
+    - [Hallucination: Why SFT Models Make Things Up](#hallucination-why-sft-models-make-things-up)
+    - [Mitigation #1: Teach the Model to Say "I Don't Know"](#mitigation-1-teach-the-model-to-say-i-dont-know)
+    - [Mitigation #2: Teach the Model to Use Tools](#mitigation-2-teach-the-model-to-use-tools)
 18. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
 
 ---
@@ -817,6 +820,104 @@ SFT is the foundation. It gets the model into the right format so that preferenc
 Pre-training    →    SFT           →    RLHF / DPO
 learned language     learned format      learned quality
 ```
+
+### Hallucination: why SFT models make things up
+
+There's a deeper problem SFT doesn't fix: **hallucination**. The model confidently generates plausible-sounding but factually wrong information. This isn't a bug — it's a direct consequence of how the model works.
+
+Remember: the model is still just predicting the next token. During pre-training, it learned which tokens are *likely* to follow which. During SFT, it learned to produce those likely tokens in a response format. But "likely" is not "true." The model has no internal fact-checker. It doesn't know what it knows and what it doesn't know.
+
+```
+User:  "Who is Orson Kovacs?"
+
+Model: "Orson Kovacs was a Hungarian-born physicist who contributed
+        to early quantum mechanics research at the University of..."
+```
+
+The model has never seen "Orson Kovacs" (a made-up name). But it's seen thousands of similar patterns: `"[Name] was a [nationality] [profession] who..."`. SFT taught it to respond helpfully and confidently to questions. So it does — by generating statistically plausible text. It doesn't have a mechanism to say "I've never seen this name in my training data, I should say I don't know."
+
+**Why this happens mechanically:** at each position, the model outputs a probability distribution over tokens. It picks the most likely next token (or samples from the distribution). Nothing in the cross-entropy loss penalizes factual incorrectness — it only penalizes predicting the wrong *token* relative to the training example. If the training data never included "I don't know" responses, the model never learns to produce them.
+
+### Mitigation #1: Teach the model to say "I don't know"
+
+The simplest fix: include examples in the SFT dataset where the correct response is a refusal.
+
+```
+User:      "Who is Orson Kovacs?"
+Assistant: "I'm sorry, I don't believe I know who that is."
+
+User:      "What happened on March 45th?"
+Assistant: "That isn't a valid date. March only has 31 days."
+```
+
+You programmatically augment your training data with knowledge-based refusals — take questions about obscure or made-up entities, and pair them with honest "I don't know" responses. The model learns that sometimes the *right* response is to not answer.
+
+This is limited. You're relying on SFT to teach the model the *boundary* of its own knowledge — which is itself something the model doesn't inherently know. It helps with obvious cases but doesn't solve the fundamental problem.
+
+### Mitigation #2: Teach the model to use tools
+
+This is the more powerful approach, and it's taught through SFT using the same special token pattern we've already seen.
+
+Instead of making up an answer, the model learns to **pause generation, emit a search query, and wait for results** before continuing. The SFT training data includes examples like this:
+
+```
+User:      "Who is Orson Kovacs?"
+Assistant: <SEARCH_START>Who is Orson Kovacs?<SEARCH_END>
+           [search results injected here by the system]
+           Based on the search results, Orson Kovacs appears to be...
+```
+
+Here's how this works mechanically — and it uses the exact same principles we built:
+
+**1. New special tokens.** Just like we added `<|user|>`, `<|assistant|>`, and `<|end|>`, the model's vocabulary is expanded with tool tokens: `<SEARCH_START>`, `<SEARCH_END>`, `<RESULT_START>`, `<RESULT_END>`, etc. These are single tokens, not character sequences.
+
+**2. SFT on tool-use examples.** The training data includes conversations where the assistant generates a search query wrapped in special tokens. The model learns: "when I'm uncertain or the question is about specific facts, emit `<SEARCH_START>query<SEARCH_END>` instead of guessing."
+
+**3. Generation pauses at the tool token.** This is the key mechanical detail. During inference, the system monitors the model's output token by token. When the model generates `<SEARCH_END>`, **generation stops**. The system:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  INFERENCE WITH TOOL USE                                          │
+│                                                                    │
+│  1. User sends: "Who is Orson Kovacs?"                            │
+│                                                                    │
+│  2. Model generates token by token:                               │
+│     "< SEARCH_START> Who is Orson Kovacs? <SEARCH_END>"           │
+│                          ↑                                         │
+│                    system detects this token                       │
+│                          │                                         │
+│  3. Generation STOPS. System extracts the query.                  │
+│                          │                                         │
+│  4. System runs the actual search (web API, database, etc.)       │
+│                          │                                         │
+│  5. System injects results into the context:                      │
+│     "...< SEARCH_END><RESULT_START>Orson Kovacs is a fictional    │
+│     character in...<RESULT_END>"                                  │
+│                          │                                         │
+│  6. Generation RESUMES. Model now has real information to         │
+│     condition on, and continues:                                  │
+│     "Based on the search results, Orson Kovacs appears to be..." │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+The model doesn't "decide" to search in some high-level cognitive sense. It learned during SFT that certain types of questions are followed by `<SEARCH_START>` in the training data. It's still just predicting the next token — but the next token happens to trigger a real system action.
+
+**4. The model conditions on real data.** After the search results are injected, the model continues generating. Now its attention can look back at the actual search results. Instead of inventing facts from statistical patterns, it's summarizing and reasoning over *real information* that was inserted into its context window.
+
+### This is SFT all the way down
+
+Tool use isn't a separate capability bolted onto the model. It's SFT with a different dataset:
+
+| What SFT teaches | Training data looks like | Special tokens |
+|---|---|---|
+| Chat format | `<user>instruction<end><assistant>response<end>` | `<user>`, `<assistant>`, `<end>` |
+| Tool use | `<SEARCH_START>query<SEARCH_END>` | `<SEARCH_START>`, `<SEARCH_END>` |
+| Code execution | `<CODE>python code<CODE_END>` | `<CODE>`, `<CODE_END>` |
+| Refusal | "I don't know" responses | (no new tokens needed) |
+
+The pattern is always the same: define special tokens, create training examples that demonstrate the behavior, fine-tune with loss masking. The system around the model watches for specific tokens and takes action. The model itself is still just autocompleting — but the special tokens give it a way to *request* actions from the outside world.
+
+This is why understanding SFT deeply matters. Every major capability of modern chatbots — chat, tool use, code execution, function calling — is built on the same foundation: structured training data with special tokens, and a system that acts on those tokens at inference time.
 
 ---
 
