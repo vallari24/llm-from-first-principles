@@ -671,14 +671,24 @@ We can measure it by checking the model's loss on the original Shakespeare valid
 
 ![Catastrophic forgetting — SFT model is measurably worse at Shakespeare](diagrams/sft_catastrophic_forgetting.png)
 
-The SFT model traded some language modeling ability for instruction-following ability. The weights can't fully serve both purposes.
+The SFT model traded some language modeling ability for instruction-following ability. The weights can't fully serve both purposes. Our toy model shows an extreme case (+37% worse) because we full-fine-tuned all parameters on just 40 examples for ~25 epochs. Production models keep forgetting to ~1-3% using four strategies:
 
-In production, teams mitigate this with:
-- **Mixing in pre-training data** during SFT (OpenAI's PPO-ptx approach)
-- **LoRA** — only fine-tune ~1% of the parameters through small adapter matrices, leaving the pre-trained weights frozen
-- **Lower learning rates** — smaller updates mean less overwriting
+**LoRA — only touch ~1% of parameters.** The biggest lever. Freeze the entire pre-trained model, add tiny trainable adapter matrices alongside each layer. The pre-trained weights are literally unchanged — the adapters learn just the delta needed for instruction-following. A 70B model fine-tunes ~700M parameters instead of 70B.
 
-> **Key insight:** Every new behavior has a cost. SFT teaches the model *what to do*, but it slightly forgets *what it knew*. This trade-off is fundamental — it's why parameter-efficient methods like LoRA exist.
+**Mix in pre-training data.** OpenAI's PPO-ptx approach: each SFT training batch includes ~10-20% original pre-training data. The model rehearses old knowledge while learning new behavior.
+
+**Lightweight SFT, heavy RL.** The 2025-2026 industry strategy. Do *less* SFT (1-2 epochs on pruned data — just enough to teach the format), then push quality improvement to RL. RL uses a KL penalty that explicitly constrains the model to stay close to its starting point, so it improves quality without the same forgetting cost.
+
+**Fewer epochs on harder data.** Meta prunes 50-95% of SFT examples, keeping only the hardest ones. Fewer gradient updates = less overwriting.
+
+| Factor | Our toy model | Production 2026 |
+|---|---|---|
+| Parameters updated | 100% (full fine-tune) | ~1% (LoRA) |
+| SFT epochs | ~25 | 1-2 |
+| Pre-training data mixed in | No | Yes |
+| Forgetting | +37% | ~1-3% |
+
+> **Key insight:** Forgetting is a fundamental property of gradient-based learning — it never goes to zero. The modern strategy is to minimize SFT's footprint (LoRA, fewer epochs, data mixing) and let RL handle quality improvement with explicit constraints against drift.
 
 ---
 
