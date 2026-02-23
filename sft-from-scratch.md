@@ -23,6 +23,7 @@
 15. [Catastrophic Forgetting: The Cost of New Behavior](#catastrophic-forgetting-the-cost-of-new-behavior)
 16. [The Decision Guide: Building Your Own SFT Pipeline](#the-decision-guide-building-your-own-sft-pipeline)
 17. [What SFT Doesn't Do](#what-sft-doesnt-do)
+    - [Knowledge of Self: The Model Doesn't Know What It Is](#knowledge-of-self-the-model-doesnt-know-what-it-is)
     - [Hallucination: Why SFT Models Make Things Up](#hallucination-why-sft-models-make-things-up)
     - [Mitigation #1: Teach the Model to Say "I Don't Know"](#mitigation-1-teach-the-model-to-say-i-dont-know)
     - [Mitigation #2: Teach the Model to Use Tools](#mitigation-2-teach-the-model-to-use-tools)
@@ -820,6 +821,18 @@ SFT is the foundation. It gets the model into the right format so that preferenc
 Pre-training    →    SFT           →    RLHF / DPO
 learned language     learned format      learned quality
 ```
+
+### Knowledge of self: the model doesn't know what it is
+
+A pre-trained model has no identity. It doesn't know its name, who made it, or what it can do. This is taught through three methods — all using mechanisms we've already seen:
+
+**1. SFT training examples** — bake identity into the weights by including examples like `"What's your name?" → "I'm ChatGPT, made by OpenAI."` The model sees enough of these during fine-tuning that it responds consistently about its own identity. Downside: it's frozen in the weights. Rename the product and you need to retrain.
+
+**2. System message at inference** — prepend a hidden `<|system|>` turn to every conversation at runtime: `"You are ChatGPT, made by OpenAI. Knowledge cutoff: April 2024. Today's date: Feb 23, 2026."` The model reads this through attention every conversation — it's just more text in the context window. This is why models can tell you today's date even though their weights are frozen. Cheaper and more flexible than retraining.
+
+**3. Both (what production models do)** — SFT teaches the base behavior ("I'm a helpful AI assistant"), the system message overrides specifics at runtime (name, date, available tools). SFT makes the model *receptive* to system messages — it learns during training that the `<|system|>` turn contains instructions it should follow.
+
+No special architecture. Just SFT examples + a hidden prompt the user doesn't see.
 
 ### Hallucination: why SFT models make things up
 
