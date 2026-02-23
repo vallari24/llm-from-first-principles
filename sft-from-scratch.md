@@ -840,7 +840,7 @@ The model has never seen "Orson Kovacs" (a made-up name). But it's seen thousand
 
 ### Mitigation #1: Teach the model to say "I don't know"
 
-The simplest fix: include examples in the SFT dataset where the correct response is a refusal.
+Include examples in the SFT dataset where the correct response is a refusal:
 
 ```
 User:      "Who is Orson Kovacs?"
@@ -850,9 +850,45 @@ User:      "What happened on March 45th?"
 Assistant: "That isn't a valid date. March only has 31 days."
 ```
 
-You programmatically augment your training data with knowledge-based refusals — take questions about obscure or made-up entities, and pair them with honest "I don't know" responses. The model learns that sometimes the *right* response is to not answer.
+But how do you know *which* questions the model should refuse? You can't guess — a 70B model knows different facts than an 8B model. The same refusal dataset doesn't work for both.
 
-This is limited. You're relying on SFT to teach the model the *boundary* of its own knowledge — which is itself something the model doesn't inherently know. It helps with obvious cases but doesn't solve the fundamental problem.
+The Llama 3 approach: **use the model to probe itself, use a stronger model to verify.**
+
+```
+Step 1 — Collect factual questions
+         (from knowledge benchmarks, trivia datasets, generated prompts)
+
+Step 2 — Sample multiple responses from YOUR model
+         Ask each question 5-10 times with temperature sampling:
+
+         "Who wrote Hamlet?"  →  "Shakespeare" (5/5 times)
+         "Capital of Bhutan?" →  "Thimphu" (3/5), "Paro" (2/5)
+         "Who is Orson Kovacs?" → 5 different confident wrong answers
+
+Step 3 — Use a STRONGER model (the "judge") to grade the responses
+         Feed each response to a more capable LLM:
+         "Is this factually correct? [response]" → correct / incorrect
+
+Step 4 — Create SFT training data based on the results:
+
+         Model consistently correct   →  use its own correct answer
+         Model consistently WRONG     →  "I don't have enough info to answer."
+         Model mixed (sometimes right) →  use only the correct responses
+```
+
+The key insight: you're **mapping the knowledge boundary of this specific model**. By sampling from the model itself, you discover *its* blind spots — questions where it confidently produces wrong answers every time. Then you create refusal training data for exactly those cases.
+
+**Why use a different (stronger) LLM as judge?** The model can't judge its own answers — it doesn't know what it doesn't know (that's the whole problem). You need an external source of truth. The judge doesn't need to be perfect — it just needs to be more reliable than the model being trained.
+
+The entire pipeline is automated. No human writes a single "I don't know" response:
+
+1. Generate thousands of factual questions
+2. Batch-sample responses from your model
+3. Batch-judge with the stronger model
+4. Programmatically create the refusal SFT examples
+5. Mix these into your regular SFT data (~5-10% of the dataset)
+
+This works for clear-cut factual questions. But it has limits — the model still can't reason about *degrees* of uncertainty, and it can't handle questions where the boundary between "I know this" and "I'm guessing" is fuzzy. That's where tool use comes in.
 
 ### Mitigation #2: Teach the model to use tools
 
