@@ -1071,6 +1071,690 @@ The loss numbers are abstract. The generated text makes the improvement visceral
 
 Each technique doesn't just lower a number — it unlocks a qualitatively different *kind* of pattern the model can learn. Bigram learns pairs. Attention learns sequences. Multi-head learns simultaneous relationships. Feedforward learns non-linear transformations. Stack them and scale them up, and you get language.
 
+## Breadth vs Depth: Why Transformers Need Both Multi-Head AND Stacked Blocks
+
+At this point you might wonder: we already have multi-head attention running 4 heads in parallel — why do we also need to stack blocks? Aren't both just "doing more"? They are, but in fundamentally different ways.
+
+### Multi-head = multiple perspectives on the same input
+
+Imagine reading the sentence `"The doctor said she would recover"`. A single attention head can compute one set of attention weights — one pattern of "who pays attention to whom." Maybe it learns that `"she"` attends strongly to `"doctor"` (coreference). Great. But that same head can't *simultaneously* learn that `"recover"` attends to `"said"` (verb structure) and that `"would"` attends to `"recover"` (tense agreement). One head, one attention pattern.
+
+Multi-head attention fixes this by running multiple heads in parallel, each with its own Q, K, V:
+
+```
+                    "The doctor said she would recover"
+                      ↓     ↓      ↓    ↓     ↓     ↓
+              ┌───────┬─────┬──────┬────┬─────┬──────┐
+              │       same input goes to ALL heads     │
+              └───┬───┴──┬──┴───┬──┴────┴─────┴──────┘
+                  ↓      ↓      ↓      ↓
+            ┌─────────┬─────────┬─────────┬─────────┐
+            │ Head 1  │ Head 2  │ Head 3  │ Head 4  │
+            │         │         │         │         │
+            │ "she"→  │ "would" │ "said"→ │ nearby  │
+            │ "doctor"│ →"recov"│ "doctor"│ tokens   │
+            │         │         │         │ attend   │
+            │ learns: │ learns: │ learns: │ learns:  │
+            │ pronouns│ tense   │ who said│ local    │
+            │ refer to│ agreemnt│ what    │ context  │
+            └────┬────┴────┬────┴────┬────┴────┬────┘
+                 ↓         ↓         ↓         ↓
+            ┌──────────────────────────────────────┐
+            │     concat → 4 perspectives fused     │
+            └──────────────────────────────────────┘
+```
+
+Each head sees the **exact same tokens** but develops different Q and K matrices, so different pairs light up. Head 1 might learn that pronouns attend to nouns. Head 2 might learn tense relationships. They all operate on the raw input, in parallel, then their outputs get concatenated.
+
+This is **breadth** — more perspectives at the same level of understanding.
+
+### Stacked blocks = progressively deeper understanding
+
+Now consider what happens with a single block vs three stacked blocks processing `"The doctor said she would recover"`:
+
+```
+                    "The doctor said she would recover"
+                                    ↓
+                ┌─────────────────────────────────────────┐
+                │              BLOCK 1                     │
+                │                                         │
+                │  Attention: each token looks at raw      │
+                │  tokens and learns direct relationships  │
+                │                                         │
+                │  "she" ← attends to "doctor"            │
+                │  "would" ← attends to "recover"         │
+                │  "said" ← attends to "doctor"           │
+                │                                         │
+                │  FeedForward: process these pairs        │
+                │                                         │
+                │  After Block 1, "she" now carries info   │
+                │  about "doctor". "would" carries info    │
+                │  about "recover".                        │
+                │                                         │
+                │  Understands: word pairs, local grammar  │
+                └──────────────────┬──────────────────────┘
+                                   ↓
+                   Block 1's OUTPUT becomes Block 2's INPUT
+                      (this is NOT the raw tokens anymore)
+                                   ↓
+                ┌─────────────────────────────────────────┐
+                │              BLOCK 2                     │
+                │                                         │
+                │  Attention: each token looks at Block 1  │
+                │  output — tokens that already absorbed   │
+                │  their neighbors                         │
+                │                                         │
+                │  "would" attends to "she"                │
+                │  ...but "she" already contains "doctor"  │
+                │  info from Block 1!                      │
+                │                                         │
+                │  So "would" now effectively knows about  │
+                │  "she" + "doctor" — two hops away —      │
+                │  even from a single attention step       │
+                │                                         │
+                │  Understands: phrases, clause structure   │
+                └──────────────────┬──────────────────────┘
+                                   ↓
+                   Block 2's OUTPUT becomes Block 3's INPUT
+                                   ↓
+                ┌─────────────────────────────────────────┐
+                │              BLOCK 3                     │
+                │                                         │
+                │  Attention: tokens now carry phrase-level │
+                │  information from Blocks 1 and 2         │
+                │                                         │
+                │  "recover" can now piece together:       │
+                │  "a doctor said [someone] would" — this  │
+                │  is a medical prediction context         │
+                │                                         │
+                │  Understands: full sentence meaning,     │
+                │  can predict what comes next             │
+                └──────────────────┬──────────────────────┘
+                                   ↓
+                              predict next token
+```
+
+The critical thing: **Block 2 does NOT see raw tokens.** It sees tokens that have *already been transformed* by Block 1. After Block 1, the token `"she"` isn't just `"she"` anymore — it's `"she (who refers to the doctor)"`. When Block 2's attention connects `"would"` to this enriched `"she"`, it's effectively learning a pattern about the *doctor*, even though it never directly attended to `"doctor"` itself.
+
+This is **depth** — each block builds on the previous block's understanding, creating progressively more abstract representations.
+
+### Why you need both
+
+Consider what each one alone can't do:
+
+**Multi-head only (wide but shallow):** you have 12 heads, all looking at raw tokens. Head 1 notices `"she"→"doctor"`. Head 7 notices `"would"→"recover"`. But no head can combine these two observations — that the doctor's patient (she) would recover — because each head independently processes the same raw input. They can't build on each other's findings.
+
+**Single-head stacked (deep but narrow):** Block 1 notices one relationship per position. Block 2 builds on it. But at each level, the model only captures one attention pattern. It might learn `"she"→"doctor"` in Block 1, but then Block 2 can only attend one way — maybe it catches tense but misses the clause boundary. One pattern per level limits what gets carried forward.
+
+**Both together:** each block has multiple heads finding different patterns, then the next block has multiple heads finding patterns *in those patterns*. It's like having a team of analysts at each level, where each level reads the previous team's combined report.
+
+```
+Multi-head only:          Stacked only:           Both:
+
+  [raw tokens]             [raw tokens]            [raw tokens]
+       ↓                        ↓                       ↓
+  ┌──┬──┬──┬──┐           ┌──────────┐            ┌──┬──┬──┬──┐
+  │H1│H2│H3│H4│           │ 1 head   │            │H1│H2│H3│H4│ Block 1
+  └──┴──┴──┴──┘           └────┬─────┘            └──┴──┴──┴──┘
+       ↓                       ↓                       ↓
+   [output]               ┌──────────┐            ┌──┬──┬──┬──┐
+                          │ 1 head   │            │H1│H2│H3│H4│ Block 2
+   4 perspectives         └────┬─────┘            └──┴──┴──┴──┘
+   on raw input                ↓                       ↓
+                          ┌──────────┐            ┌──┬──┬──┬──┐
+   can't combine          │ 1 head   │            │H1│H2│H3│H4│ Block 3
+   findings across        └────┬─────┘            └──┴──┴──┴──┘
+   heads                       ↓                       ↓
+                           [output]                [output]
+
+                          3 levels deep,          4 perspectives
+                          but only 1 pattern      × 3 levels deep
+                          per level               = rich understanding
+```
+
+### This is the actual architecture of every GPT model
+
+GPT-2 Small: 12 blocks × 12 heads per block = 144 simultaneous attention patterns across 12 levels of abstraction.
+
+GPT-3: 96 blocks × 96 heads per block = 9,216 attention patterns across 96 levels.
+
+Research on what these layers learn shows exactly the pattern you'd expect:
+- **Early blocks** (1–3): character patterns, common word pieces, punctuation rules
+- **Middle blocks** (4–8): syntax, grammar, subject-verb agreement, clause boundaries
+- **Late blocks** (9–12): semantics, factual recall, reasoning patterns, style
+
+Each block asks "given what the previous blocks figured out, what higher-level pattern can I find?" Multi-head gives breadth at each level. Stacking gives depth across levels. Together, they turn raw token IDs into understanding.
+
+## How Backpropagation Works Through Stacked Blocks
+
+Before understanding residual connections, you need to understand the problem they solve. And that means understanding how training actually flows through multiple blocks.
+
+### Forward: data flows down
+
+Training has two phases. The **forward pass** pushes data through the model to make a prediction. With 3 stacked blocks:
+
+```
+"The doctor said she would ___"
+
+  ↓ embeddings
+
+  x₀ = [0.2, -0.5, 0.8, ...]       ← raw token + position embeddings
+
+  ↓ Block 1 (has weights W₁)
+
+  x₁ = Block1(x₀)                   ← x₁ depends on x₀ and W₁
+
+  ↓ Block 2 (has weights W₂)
+
+  x₂ = Block2(x₁)                   ← x₂ depends on x₁ and W₂
+
+  ↓ Block 3 (has weights W₃)
+
+  x₃ = Block3(x₂)                   ← x₃ depends on x₂ and W₃
+
+  ↓ lm_head
+
+  prediction: "sing"
+  correct answer: "recover"
+  loss = 4.0                         ← how wrong we are
+```
+
+Each block transforms the data using its own internal weights (Q, K, V matrices, feedforward weights). The output of one block becomes the input of the next. At the end, we get a prediction and a loss — a single number measuring how wrong we were.
+
+### Backward: gradients flow up
+
+The **backward pass** works in reverse. Starting from the loss, it asks every weight in the model: "if I nudged you slightly, would the loss go up or down?" The answer for each weight is its **gradient** — a number saying which direction to move and by how much.
+
+To compute each weight's gradient, backpropagation uses the **chain rule**: trace the path from that weight to the loss, and multiply the derivatives along the way.
+
+Let's make it concrete with a toy example. Forget attention — just two blocks, each with one weight, doing simple multiplication:
+
+```
+Forward:
+  x = 2.0
+  Block 1:  a = x × W₁ = 2.0 × 0.5 = 1.0
+  Block 2:  b = a × W₂ = 1.0 × 3.0 = 3.0
+  loss = (target - b)² = (5.0 - 3.0)² = 4.0
+```
+
+Now backward. Each weight needs its own gradient:
+
+```
+Backward:
+
+  How does W₂ affect the loss?
+  Path: W₂ → b → loss
+  W₂'s gradient = ∂loss/∂b × ∂b/∂W₂
+                = -2×(5.0-3.0) × a
+                = -4.0 × 1.0 = -4.0
+  → "increase W₂, loss decreases by 4.0 per unit"
+
+  How does W₁ affect the loss?
+  Path: W₁ → a → b → loss     (longer path — must go through W₂!)
+  W₁'s gradient = ∂loss/∂b × ∂b/∂a × ∂a/∂W₁
+                = -4.0 × W₂ × x
+                = -4.0 × 3.0 × 2.0 = -24.0
+  → "increase W₁, loss decreases by 24.0 per unit"
+```
+
+The key thing: **W₁'s gradient must pass through W₂**. That `× W₂` in the chain is unavoidable — it's how calculus works. The gradient for an early weight always gets multiplied by the weights of every block between it and the loss.
+
+### Why depth kills the gradient
+
+In the toy example, W₂ = 3.0, so passing through it actually *amplified* the gradient. But in real networks, weights are typically small numbers (around 0.1–0.8 after initialization). When the gradient passes through a block with small weights, it shrinks:
+
+```
+3 blocks with small weights:
+  W₁'s gradient = loss_gradient × W₃ × W₂
+                = 1.0 × 0.6 × 0.6 = 0.36
+
+10 blocks:
+  W₁'s gradient = loss_gradient × W₁₀ × W₉ × W₈ × ... × W₂
+                = 1.0 × 0.6⁹ = 0.01
+
+96 blocks:
+  W₁'s gradient = 1.0 × 0.6⁹⁵ ≈ 0.0000000000000000001
+```
+
+Block 1's weights get a gradient so small that the update is effectively zero:
+
+```
+weight update = learning_rate × gradient
+             = 0.001 × 0.0000000000000000001
+             = nothing
+
+Block 1 stops learning. It's dead weight.
+```
+
+This is the **vanishing gradient problem**. The deeper the network, the less the early blocks learn, because the gradient must pass through every intermediate block's weights and gets shrunk at each one. Past ~5 blocks, the early blocks barely train at all.
+
+## Residual Connections: The Fix
+
+The fix is exactly two characters: `+`.
+
+```python
+# Without residual — each block REPLACES the input
+def forward(self, x):
+    x = self.attention(x)
+    x = self.feedforward(x)
+    return x
+
+# With residual — each block ADDS TO the input
+def forward(self, x):
+    x = x + self.attention(x)
+    x = x + self.feedforward(x)
+    return x
+```
+
+### How `+` changes the backward pass
+
+Remember, the chain rule says: to get W₁'s gradient, trace the path from W₁ to the loss and multiply derivatives along the way. Without residual, there's only one path — through every block's weights.
+
+With `output = input + block(input)`, there are now **two paths** at every block:
+
+```
+Forward with residual:
+  x ─────────────────┐
+  │                   │
+  ↓                   ↓
+  block(x)    ──→    (+)  ──→  output
+                      ↑
+  "through block"   "skip"
+```
+
+Backward at this `+`:
+
+```
+  A gradient of 0.5 arrives at the (+)
+
+  Addition's derivative is 1 with respect to BOTH inputs.
+  (If a + b = c, then ∂c/∂a = 1 and ∂c/∂b = 1)
+
+  So the gradient splits into two identical copies:
+
+  0.5 → skip path     (goes directly to x, multiplied by nothing)
+  0.5 → block path    (goes through block weights, might shrink to 0.3)
+```
+
+The skip path delivers the gradient **untouched**. No multiplication by block weights. The gradient just passes straight through the `+`.
+
+### Tracing through 3 blocks
+
+```
+Forward:
+  x₀ → [x₀ + Block1(x₀)] = x₁ → [x₁ + Block2(x₁)] = x₂ → [x₂ + Block3(x₂)] = x₃
+
+Backward (gradient g arrives at x₃):
+
+  At Block 3's (+):
+    skip path:  g goes to x₂ (untouched)
+    block path: g × W₃ goes to x₂ (shrunk)
+    x₂ receives: g + g×W₃
+
+  At Block 2's (+):
+    skip path:  g goes to x₁ (untouched — the g from Block 3's skip)
+    block path: g × W₂ goes to x₁ (shrunk)
+    x₁ receives: g + stuff
+
+  At Block 1's (+):
+    skip path:  g goes to x₀ (STILL untouched)
+    block path: g × W₁ goes to x₀ (shrunk)
+    x₀ receives: g + stuff
+```
+
+The skip path at each `+` copies `g` backward without multiplying by anything. So `g` hops from `+` to `+` to `+` — **skipping through every block's weights** — and arrives at Block 1 at full strength:
+
+```
+Without residual (10 blocks):
+  W₁'s gradient passes through: W₂ × W₃ × W₄ × ... × W₁₀
+  = gradient × 0.6⁹ = gradient × 0.01
+
+With residual (10 blocks):
+  W₁'s gradient has a direct path through skip connections
+  = gradient × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = gradient
+  (plus additional signal through the block paths)
+```
+
+The gradient highway doesn't replace backpropagation through the blocks — each block still gets its gradient and computes its own weight updates. The highway just ensures the signal is **strong enough** when it arrives at each block. Without it, Block 1 gets gradient ≈ 0 and can't learn. With it, Block 1 gets the full gradient and can compute meaningful updates for its own weights.
+
+### What it means for the data (forward direction)
+
+The `+` also changes what each block needs to learn. Without residual, each block must produce a complete output from scratch — the input is thrown away. With residual, each block only needs to produce a **small correction** that gets added to the existing representation:
+
+```
+Without residual:
+  "she" → [Block 1] → [completely new vector]
+  Original embedding is gone.
+
+With residual:
+  "she" → [Block 1 produces small correction] → original + correction
+  "she" is still there, just refined.
+```
+
+Each block is like an editor making notes on a document, not rewriting it from scratch. The original information is always preserved, and each block contributes an additive refinement.
+
+### The residual stream
+
+With residual connections, think of data flowing through the model as a river:
+
+```
+[raw tokens] ══════════════════════════════════════════►  always present
+                 ↓↑            ↓↑            ↓↑
+              Block 1       Block 2       Block 3
+              adds its      adds its      adds its
+              correction    correction    correction
+
+The main stream (═══) carries everything forward.
+Each block dips in, adds something, and the stream flows on.
+
+Backward, the gradient flows along this same stream in reverse,
+arriving at every block at full strength.
+```
+
+By Block 3, the stream contains: raw embeddings + Block 1's correction + Block 2's correction + Block 3's correction. Nothing is lost. The final prediction is made from this accumulated representation.
+
+In the transformer literature, this main flow is called the **residual stream** — and understanding it as a river that blocks read from and write to (in both forward and backward directions) is one of the most useful mental models for understanding how transformers work internally.
+
+## Layer Normalization: Keeping the Numbers Sane
+
+We have residual connections keeping gradients alive, multi-head attention letting tokens communicate, and feedforward letting them think. But there's one more problem: as data flows through many blocks, the **scale of the numbers** can drift wildly. One block might output values around 500, another around 0.002. This makes everything unstable — attention scores blow up, softmax saturates, gradients oscillate. Normalization fixes this by forcing numbers into a consistent range after every block.
+
+### Why numbers drift without normalization
+
+Each block multiplies the input by learned weights and adds results together. After many blocks, small biases compound:
+
+```
+Block 1 output:  values around [-2, 2]       ← reasonable
+Block 3 output:  values around [-15, 15]     ← getting big
+Block 6 output:  values around [-200, 200]   ← out of control
+Block 12 output: values around [-5000, 5000] ← exploding
+```
+
+Or the opposite — values shrink toward zero and all tokens look identical. Either way, the downstream layers can't work properly. Attention computes Q·K dot products — if Q and K have values around 5000, the dot products are in the millions, softmax gives 100% weight to one token and 0% to everything else. No blending, no learning.
+
+### What normalization does
+
+Take a set of numbers, and transform them so they have **mean ≈ 0** and **standard deviation ≈ 1**:
+
+```
+Before: [200, 800, 400, 600]
+  mean = 500
+  std  = 224
+
+After:  [(200-500)/224, (800-500)/224, (400-500)/224, (600-500)/224]
+      = [-1.34, 1.34, -0.45, 0.45]
+```
+
+The relative pattern is preserved — 800 was the biggest and it's still the biggest. But the values are now in a small, consistent range. Every layer downstream can count on receiving numbers roughly between -2 and 2, regardless of what happened upstream.
+
+### Why mean=0 and std=1 specifically?
+
+This isn't an arbitrary choice. It's the configuration where neural network operations work best, for three concrete reasons:
+
+**1. Activations stay in the useful range.**
+
+ReLU (`max(0, x)`) kills all negative values. If your numbers are centered at 100, almost everything is positive and ReLU does nothing — it's just a passthrough. If centered at -100, almost everything gets killed to zero. Centered at 0, roughly half the values survive and half get zeroed — maximum information flow, maximum non-linearity.
+
+```
+Centered at 100:  [98, 101, 99, 103] → ReLU → [98, 101, 99, 103]  (all survive, no non-linearity)
+Centered at -100: [-102, -99, -101, -98] → ReLU → [0, 0, 0, 0]    (all dead)
+Centered at 0:    [-1.2, 0.8, -0.3, 1.5] → ReLU → [0, 0.8, 0, 1.5] (useful mix)
+```
+
+**2. Softmax stays in its useful range.**
+
+Softmax turns scores into probabilities using `e^x`. With big numbers, one value dominates completely:
+
+```
+Scores: [500, 502, 499]
+  e^500 ≈ huge, e^502 ≈ huge×7.4, e^499 ≈ huge×0.37
+  softmax → [0.12, 0.88, 0.00]    ← basically argmax, nearly all weight on one token
+
+Scores: [-0.5, 0.8, -0.3]
+  softmax → [0.18, 0.67, 0.15]    ← smooth distribution, can blend information
+```
+
+Attention needs smooth weights to blend information from multiple tokens. Normalized scores keep softmax in the smooth zone.
+
+**3. Gradients stay healthy.**
+
+Sigmoid, tanh, and softmax all have **flat regions** at extreme values. When the input is very large or very small, the derivative (gradient) is near zero:
+
+```
+tanh(0.5) has gradient ≈ 0.79     ← healthy, learning happens
+tanh(10)  has gradient ≈ 0.00004  ← flat region, gradient vanishes
+```
+
+Normalized values stay near the center where gradients are large. Unnormalized values can land in flat regions where gradients vanish and learning stalls.
+
+Mean=0, std=1 is the sweet spot where all three of these properties hold simultaneously. It's not that a Gaussian distribution is magic — it's that this specific centering and scaling keeps every operation in the network functioning in its designed range.
+
+### Batch Normalization — the original approach (and why it fails for language)
+
+Batch Normalization (2015) was the first widely successful normalization technique. It normalizes each **feature** across the **batch**:
+
+```
+Batch of 4 sequences, looking at feature #3:
+
+                    feature #3
+                        ↓
+Sequence 0:   [0.2,  1.5,  8.0,  0.1]
+Sequence 1:   [0.4,  0.3,  2.0,  0.5]
+Sequence 2:   [0.1,  0.8,  6.0,  0.3]
+Sequence 3:   [0.6,  1.2,  4.0,  0.7]
+                          ↑
+              BatchNorm normalizes DOWN this column:
+              values: [8.0, 2.0, 6.0, 4.0]
+              mean = 5.0, std = 2.24
+              → [1.34, -1.34, 0.45, -0.45]
+```
+
+"For feature #3, what's the average across all sequences in this batch?" It forces every feature to have mean=0, std=1 when measured across the batch.
+
+This works brilliantly for images — each image in a batch has the same shape (say 224×224 pixels), and pixel features at the same position are meaningfully comparable across images.
+
+But it breaks for language in two ways:
+
+**Problem 1: Variable sequence lengths.** Sequence 1 might be 5 tokens long, Sequence 2 might be 200. What does it mean to average feature #3 at position 150 when most sequences don't even have a position 150? You'd be computing statistics from just a few sequences, making the normalization noisy and unreliable.
+
+**Problem 2: Batch dependence.** The normalization of your sequence depends on what *other* sequences happen to be in the batch. During training with batch_size=32, this is okay — you get stable statistics. But during generation, batch_size=1. There's no batch to normalize across. (BatchNorm works around this with running averages tracked during training, but it's a hack that adds complexity and can behave differently between training and inference.)
+
+### Layer Normalization — what transformers actually use
+
+LayerNorm flips the axis. Instead of normalizing one feature across all sequences, it normalizes one token across all its **features**:
+
+```
+                    One token's feature vector:
+
+                    [0.2,  1.5,  8.0,  0.1]
+                     ←─── LayerNorm normalizes ACROSS this row ───→
+
+                    mean = 2.45, std = 3.17
+                    → [-0.71, -0.30, 1.75, -0.74]
+```
+
+"For this one token, what's the average across all its features?" Each token normalizes itself, using only its own numbers.
+
+### The key difference
+
+```
+Batch of data — shape (Batch, Time, Features):
+
+         f0    f1    f2    f3
+seq 0: [ 0.2,  1.5,  8.0,  0.1 ]  ── LayerNorm: normalize this row ──→
+seq 1: [ 0.4,  0.3,  2.0,  0.5 ]  ── LayerNorm: normalize this row ──→
+seq 2: [ 0.1,  0.8,  6.0,  0.3 ]  ── LayerNorm: normalize this row ──→
+seq 3: [ 0.6,  1.2,  4.0,  0.7 ]  ── LayerNorm: normalize this row ──→
+         │      │      │      │
+         ↓      ↓      ↓      ↓
+     BatchNorm: normalize each column
+```
+
+**BatchNorm** looks down columns — needs the whole batch, breaks with variable lengths.
+**LayerNorm** looks across rows — needs only one token, works with any batch size or sequence length.
+
+### Where LayerNorm goes in the transformer block
+
+In modern transformers (including Karpathy's implementation), LayerNorm goes **before** attention and **before** feedforward. This is called **pre-norm**:
+
+```python
+def forward(self, x):
+    x = x + self.attention(self.ln1(x))     # normalize → attend → add back
+    x = x + self.feedforward(self.ln2(x))   # normalize → feedforward → add back
+    return x
+```
+
+Notice: the normalized values go into attention/feedforward, but the **residual connection adds back the raw `x`**, not the normalized version. This is important — the residual stream carries unnormalized values (preserving the gradient highway), and each block normalizes its own input right before processing it.
+
+```
+Residual stream:  x ────────────────────(+)────────────────────(+)───→
+                          ↓              ↑           ↓          ↑
+                       LayerNorm         │        LayerNorm     │
+                          ↓              │           ↓          │
+                       Attention ────────┘        FeedFwd ──────┘
+                       (sees clean                (sees clean
+                        numbers)                   numbers)
+```
+
+Each block gets clean, well-scaled input. The residual stream stays untouched. Both systems work without interfering with each other.
+
+### LayerNorm also has learnable parameters
+
+After normalizing to mean=0, std=1, LayerNorm applies two learned parameters per feature — a **scale** (γ) and a **shift** (β):
+
+```
+output = γ × normalized + β
+```
+
+These start at γ=1, β=0 (identity — no effect). During training, the model can learn to adjust them. Maybe feature #3 works better centered at 0.5 instead of 0. Maybe feature #7 needs a wider spread. The learnable parameters give the model the option to undo the normalization for specific features if that helps — but it starts from the stable, normalized baseline.
+
+---
+
+## Putting It All Together: The Full GPT Architecture
+
+We've built every piece separately. Now let's walk through the whole thing as one story — what happens when our model sees `"The cat sat on the "` and tries to predict the next character.
+
+Here's the full architecture, bottom to top:
+
+```
+"The cat sat on the ___"
+         │
+         ▼
+┌─────────────────────────────┐
+│  Token Embedding            │  Each character → a vector of numbers
+│  + Position Embedding       │  Each position → "I'm the 3rd token"
+│  (added together)           │  Now each token knows WHAT it is + WHERE it is
+└─────────────────────────────┘
+         │
+         ▼
+┌─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┐
+│           Transformer Block  (×N layers)            │
+│                                                     │
+│  ┌───────────────────────────────────────────┐      │
+│  │ LayerNorm                                 │      │
+│  │ → normalize numbers before attention      │      │
+│  └─────────────────┬─────────────────────────┘      │
+│                    │                                │
+│  ┌─────────────────▼─────────────────────────┐      │
+│  │ Masked Multi-Head Attention               │      │
+│  │ ┌────────┐┌────────┐┌────────┐┌────────┐  │      │
+│  │ │ Head 1 ││ Head 2 ││ Head 3 ││ Head 4 │  │      │
+│  │ │Q·K→wt  ││Q·K→wt  ││Q·K→wt  ││Q·K→wt  │  │      │
+│  │ │→blend V││→blend V││→blend V││→blend V│  │      │
+│  │ │+dropout││+dropout││+dropout││+dropout│  │      │
+│  │ └────────┘└────────┘└────────┘└────────┘  │      │
+│  │ concat all heads → projection → dropout   │      │
+│  └─────────────────┬─────────────────────────┘      │
+│                    │                                │
+│     x = x + attention_output    ← residual          │
+│                    │               connection       │
+│  ┌─────────────────▼─────────────────────────┐      │
+│  │ LayerNorm                                 │      │
+│  │ → normalize again before feedforward      │      │
+│  └─────────────────┬─────────────────────────┘      │
+│                    │                                │
+│  ┌─────────────────▼─────────────────────────┐      │
+│  │ FeedForward                               │      │
+│  │ Linear(n_embd → 4×n_embd)  expand         │      │
+│  │ → ReLU                     think          │      │
+│  │ → Linear(4×n_embd → n_embd) compress back │      │
+│  │ → Dropout                                 │      │
+│  └─────────────────┬─────────────────────────┘      │
+│                    │                                │
+│     x = x + feedforward_output  ← residual          │
+│                                    connection       │
+└─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
+         │
+         ▼  (repeat N times — each block refines understanding)
+         │
+┌─────────────────────────────┐
+│  Final LayerNorm            │  One last normalization
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Linear (lm_head)           │  Project to vocabulary size
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Softmax → Sample           │  Pick the next character
+└─────────────────────────────┘
+         │
+         ▼
+      "m" (predicts "the mat" or "the map" or ...)
+```
+
+Let's walk through the diagram reading it bottom to top:
+
+**Embeddings (the bottom)** — The model can't read letters. Each character gets turned into a list of numbers (a fingerprint for "what I am"), and each position gets its own numbers too ("where I am"). Added together, every token now knows what it is and where it sits.
+
+**The Transformer Block (the big dashed box)** — This is the heart of the whole thing. Each block does exactly two things:
+
+1. **Communicate** — Multi-head attention lets every token look at tokens before it and gather information. Four heads run in parallel, each noticing different patterns. The mask ensures no token peeks at the future.
+
+2. **Think** — The feedforward network processes what each token just gathered. It expands to 4x the size (room to think), applies ReLU (decides what's important), compresses back down.
+
+Between each step, two safety mechanisms:
+- **LayerNorm** before each operation — scales numbers to a stable range
+- **Residual connection** (`x = x + ...`) after each operation — adds the output back to the original, so gradients flow freely and nothing gets lost
+
+**The block repeats N times.** Each pass refines the understanding. Block 1 learns character pairs. Block 2 learns words. Block 3 picks up phrases. Block 4 starts to see grammar.
+
+**The top** — After all blocks: a final LayerNorm, then a Linear layer projects to 65 values (one per character), then softmax picks the next character.
+
+### Dropout: learning to not memorize
+
+Imagine studying for an exam by covering random parts of your notes each time. You can't rely on memorizing the layout — you're forced to actually understand the material.
+
+That's dropout. During training, randomly set 20% of values to zero. Different random values every time. It shows up in three places in the diagram — after attention weights, after the multi-head projection, and after feedforward.
+
+During generation, dropout turns off. The model uses everything it learned.
+
+### The loss tells the whole story
+
+Each piece we added had a measurable impact:
+
+```
+Bigram (just a lookup table)          → 2.50 val loss
++ Self-attention (tokens can talk)    → 2.48
++ Multi-head (4 perspectives)         → 2.28
++ FeedForward (tokens can think)      → 2.24
++ Residual + LayerNorm (4 blocks)     → 2.13
++ Dropout + bigger embeddings         → 1.98
+```
+
+From 2.50 to 1.98. The generated text goes from random gibberish to something with character names, line breaks in the right places, and words that almost make sense. Not Shakespeare yet — but the structure is emerging.
+
+### This is a GPT
+
+What we built is the same architecture as GPT-2, GPT-3, and the foundation behind ChatGPT. Not "inspired by" — literally the same design. The only differences are scale:
+
+- **Ours:** 65 characters, 64-dim embeddings, 4 layers, trained on 1MB of Shakespeare
+- **GPT-3:** 50,000 tokens, 12,288-dim embeddings, 96 layers, trained on 300B+ tokens
+
+Same attention. Same residual connections. Same LayerNorm. Same feedforward. Same dropout. Just more of everything.
+
 ---
 
 *More sections coming as I work through the video...*
