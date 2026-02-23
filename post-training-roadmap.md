@@ -45,7 +45,7 @@ Turn a base model (autocomplete) into a chatbot (instruction-following).
 
 ### Run it
 ```
-cd ~/src/learn-gpt
+cd ~/src/build-llm-from-scratch
 source venv/bin/activate
 jupyter lab notebooks/05_sft_from_scratch.ipynb
 ```
