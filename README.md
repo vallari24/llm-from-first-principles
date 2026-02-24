@@ -32,6 +32,7 @@ jupyter notebook
 - [Mental Models for AI Builders](llm-mental-models.md) — conceptual frameworks for thinking about LLMs
 - [Post-Training Roadmap](post-training-roadmap.md) — SFT, RLHF, and DPO explained (notebooks 05-07)
 - [Fine-Tuning in Production](fine-tuning-in-production.md) — how 24 companies actually ship fine-tuned models (case studies, patterns, best practices)
+- [LLMs in Recommendation Systems](llms-in-recommendations.md) — how industry actually uses LLMs for recs (architecture patterns, 15+ case studies across ads, video, music, jobs, e-commerce, and more)
 
 ## Loss progression
 
