@@ -1,4 +1,4 @@
-# learn-gpt
+# llm-from-first-principles
 
 Building a GPT language model from scratch, then training it to follow instructions — from raw character prediction to RLHF alignment.
 
