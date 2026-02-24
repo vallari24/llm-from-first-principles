@@ -665,7 +665,7 @@ For the formal treatment, read ["Attention Is All You Need"](https://arxiv.org/a
 
 - **Video:** Andrej Karpathy — ["Let's build GPT: from scratch, in code, spelled out"](https://www.youtube.com/watch?v=kCc8FmEb1nY)
 - **Paper:** Vaswani et al. — ["Attention Is All You Need"](https://arxiv.org/abs/1706.03762) (2017)
-- **Notebooks:** All the code behind this article — from bigram to full transformer — is in my [build-llm-from-scratch notebooks](https://github.com/vallari24/build-llm-from-scratch/tree/main/notebooks). Follow along, run the cells, break things.
+- **Notebooks:** All the code behind this article — from bigram to full transformer — is in my [llm-from-first-principles notebooks](https://github.com/vallari24/llm-from-first-principles/tree/main/notebooks). Follow along, run the cells, break things.
 
 ---
 
