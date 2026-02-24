@@ -31,6 +31,7 @@ jupyter notebook
 - [What I Learned Building a Language Model From Scratch](building-gpt-from-scratch.md) — deep technical walkthrough of notebooks 02-04
 - [Mental Models for AI Builders](llm-mental-models.md) — conceptual frameworks for thinking about LLMs
 - [Post-Training Roadmap](post-training-roadmap.md) — SFT, RLHF, and DPO explained (notebooks 05-07)
+- [Fine-Tuning in Production](fine-tuning-in-production.md) — how 24 companies actually ship fine-tuned models (case studies, patterns, best practices)
 
 ## Loss progression
 
