@@ -1206,22 +1206,22 @@ Here's the quick mental model before we go deep: **LoRA/QLoRA** freeze most weig
 
 ### LoRA and QLoRA
 
-The most widely adopted technique for production SFT. Instead of updating all model weights, LoRA adds small trainable matrices (rank 16–128) to attention layers:
+The most widely adopted technique for production SFT. Instead of updating all model weights, LoRA adds small trainable matrices (rank 16–128) to attention layers ([Hu et al. 2021](https://arxiv.org/abs/2106.09685)):
 
 - **LoRA**: Adds ~0.1–1% trainable parameters. Saves memory, enables fast swapping between fine-tuned variants.
-- **QLoRA**: Quantizes the base model to 4-bit, then applies LoRA on top. Cuts VRAM by ~75% with minimal quality loss.
+- **QLoRA**: Quantizes the base model to 4-bit, then applies LoRA on top. Cuts VRAM by ~75% with minimal quality loss ([Dettmers et al. 2023](https://arxiv.org/abs/2305.14314)).
 
 When to use full fine-tuning instead: when you need deep domain adaptation (new languages, highly specialized domains), when you have enough compute, or when LoRA quality plateaus and you've verified the gap experimentally.
 
 ### Lightweight SFT + heavy RL
 
-Meta's Llama 3 recipe, now adopted widely:
+Meta's Llama 3 recipe ([Dubey et al. 2024](https://arxiv.org/abs/2407.21783)), now adopted widely:
 
 1. **Short SFT phase**: Small, high-quality dataset (~10K–50K examples) to teach format and basic behavior
 2. **Rejection sampling**: Generate multiple responses, score with a reward model, keep the best
 3. **DPO/Online RL**: Train on preference pairs to refine quality beyond what SFT can achieve
 
-This works because SFT teaches *what* to do, but RL teaches *how well* to do it. The combination outperforms either alone.
+This works because SFT teaches *what* to do, but RL teaches *how well* to do it. The combination outperforms either alone. See also DPO ([Rafailov et al. 2023](https://arxiv.org/abs/2305.18290)).
 
 ### Synthetic data + filtering
 
@@ -1232,7 +1232,7 @@ The standard pipeline for generating training data at scale:
 3. **Deduplicate**: Remove near-duplicates using embedding similarity or n-gram overlap
 4. **Validate**: Human spot-check a sample to verify quality
 
-NVIDIA's Nemotron pipeline generates 18M+ examples this way. The key insight: generating data is cheap; the filtering pipeline is what matters.
+NVIDIA's Nemotron pipeline generates 18M+ examples this way ([Wang et al. 2024](https://arxiv.org/abs/2406.11704)). The key insight: generating data is cheap; the filtering pipeline is what matters. For an early example of synthetic instruction data, see Alpaca ([Taori et al. 2023](https://crfm.stanford.edu/2023/03/13/alpaca.html)).
 
 ### Multi-stage SFT
 
@@ -1244,11 +1244,11 @@ Rather than training on all data at once, stage the training:
 | 2 | Domain specialization | Domain-specific examples | 1–2 |
 | 3 | Safety and formatting | Alignment data, refusals | 0.5–1 |
 
-Alibaba's Qwen uses a curriculum that progresses from simple to complex. This prevents the model from being overwhelmed early and helps it build capabilities incrementally.
+Alibaba's Qwen uses a curriculum that progresses from simple to complex ([Qwen Team 2024](https://arxiv.org/abs/2412.15115)). This prevents the model from being overwhelmed early and helps it build capabilities incrementally.
 
 ### Constitutional AI
 
-Anthropic's approach to alignment without per-example human labels:
+Anthropic's approach to alignment without per-example human labels ([Bai et al. 2022](https://arxiv.org/abs/2212.08073)):
 
 1. Write a set of principles (the "constitution")
 2. Generate responses, then ask the model to critique them against the principles
@@ -1265,7 +1265,7 @@ Training a smaller model to mimic a larger one:
 - **Reasoning trace distillation**: Smaller model learns the *thinking process*, not just final answers (DeepSeek-R1's approach)
 - **Logit distillation**: Match the probability distributions, not just the top-1 token (requires white-box access)
 
-DeepSeek's Qwen-32B distilled from R1-671B outperforms many models trained from scratch at much larger scale. Distillation is the reason small open models got so good in 2024–2025.
+DeepSeek's Qwen-32B distilled from R1-671B outperforms many models trained from scratch at much larger scale ([DeepSeek 2025](https://arxiv.org/abs/2501.12948)). For distillation during pre-training, see Gemma 2 ([Gemma Team 2024](https://arxiv.org/abs/2408.00118)). Distillation is the reason small open models got so good in 2024–2025.
 
 ### Frameworks and tools
 
@@ -1348,5 +1348,8 @@ General-purpose SFT teaches a model to be a good assistant. Domain-specific SFT 
 - [DeepSeek-Coder-V2](https://arxiv.org/abs/2406.11931) (DeepSeek 2024) — MoE code model
 - [Code Llama: Open Foundation Models for Code](https://arxiv.org/abs/2308.12950) (Rozière et al. 2024)
 - [FinGPT: Open-Source Financial Large Language Models](https://arxiv.org/abs/2306.06031) (Yang et al. 2023)
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) (Hu et al. 2021) — parameter-efficient fine-tuning
+- [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314) (Dettmers et al. 2023) — 4-bit quantization + LoRA
+- [Direct Preference Optimization](https://arxiv.org/abs/2305.18290) (Rafailov et al. 2023) — RL-free preference alignment
 
 *This is part of a series where I build every stage of the LLM training pipeline from scratch. [Previous: Building a Language Model from Scratch](building-gpt-from-scratch.md).*
