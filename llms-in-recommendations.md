@@ -570,29 +570,7 @@ Refined response ◀── LLM generation ◀── Retrieval (RAG / catalog)
 
 Each turn in the conversation updates the system's understanding of the user, which feeds back into retrieval and generation. This is fundamentally different from traditional RecSys, which learns from *actions* (clicks, purchases) — conversational systems learn from *stated preferences* in real time.
 
-#### How Recommendations Are Displayed
-
-Every major conversational recommender converges on the same pattern: **hybrid text + structured rich cards**, not pure prose. The LLM generates a natural-language response *and* structured product/item cards rendered inline. The critical architectural question is how the model signals which display component to render.
-
-| System | Display Format | Card Contents | Purchase Flow |
-|--------|---------------|---------------|---------------|
-| **Amazon Rufus** | Hydration markup — LLM emits structured tags, populated with live catalog data | Product image, title, price, ratings, category chips | Links to Amazon PDP |
-| **ChatGPT Shopping** | Horizontal scrollable carousel inline in chat | Normalized image, AI-simplified title, price, aggregated ratings, AI feature labels ("Best budget choice") | Instant Checkout via Stripe (2026) |
-| **Perplexity Shopping** | Product cards below cited text answer | Product name, price, seller, pros/cons (unique differentiator) | "Buy with Pro" one-click + PayPal |
-| **Booking.com** | Visual property list with deep-links | Property photos, pricing, availability | One-tap booking via deep-link |
-| **Google Gemini** | Side-by-side comparisons with conversational follow-ups | Product images, prices, reviews, "Direct Offers" discounts | UCP-powered checkout (Etsy, Wayfair, Shopify, Target, Walmart) |
-
-**Amazon Rufus's hydration architecture** is the most technically interesting: the LLM itself decides the display format by emitting markup instructions within its response. These specify whether to render a long-form text answer, a short-form snippet, a clickable navigation link, or a product carousel — then the frontend populates the markup with live data from Amazon's catalog systems. For broad queries ("good gifts for Valentine's Day"), Rufus emits category navigation chips. For specific queries, it emits product cards. The Lens Live integration renders a swipeable carousel below the camera view. Source: [amazon.science/blog/the-technology-behind-amazons-genai-powered-shopping-assistant-rufus](https://www.amazon.science/blog/the-technology-behind-amazons-genai-powered-shopping-assistant-rufus)
-
-**ChatGPT Shopping** runs two parallel fan-out queries: contextual queries for the written text portion, and Google Shopping searches for the product carousel data. Each card gets AI-generated feature labels ("Compact design", "Most popular") synthesized from reviews and product details. As of 2026, Instant Checkout via the Agentic Commerce Protocol (built with Stripe, open-sourced under Apache 2.0) lets users complete purchases without leaving the chat. Live with Etsy; Shopify merchants (Glossier, SKIMS, Spanx, Vuori) and Target rolling out. Source: [openai.com/index/buy-it-in-chatgpt](https://openai.com/index/buy-it-in-chatgpt), [github.com/agentic-commerce-protocol](https://github.com/agentic-commerce-protocol/agentic-commerce-protocol)
-
-**Perplexity Shopping** distinguishes itself with pros/cons on every card and a "View more" expandable side panel with consolidated review summaries and source citations. "Snap to Shop" adds photo-based visual search. Perplexity decided against advertising in Feb 2026 to preserve trust. Source: [perplexity.ai/hub/blog/shopping-that-puts-you-first](https://perplexity.ai/hub/blog/shopping-that-puts-you-first)
-
-**Google Gemini** (2026) added conversational follow-ups ("Show me these boots in blue") with side-by-side comparisons, "Personal Intelligence" connecting Gmail and Google Photos for personalized recommendations, and a Walmart partnership for product recs directly in Gemini. Source: [Bloomberg, Feb 2026](https://www.bloomberg.com/news/articles/2026-02-11/google-pushes-ai-shopping-features-in-search-and-gemini-chatbot)
-
-The emerging pattern is **Generative UI (GenUI)** — interfaces drawn in real-time based on user intent, not hard-coded. Amazon's hydration markup is an early production example. Jakob Nielsen's 2026 predictions highlight this as a major shift: apps generating bespoke micro-interfaces per task rather than routing users through pre-built screens.
-
-#### Does User Feedback Update Models in Real Time?
+#### When a User Doesn't Like a Recommendation — What Happens to That Signal?
 
 **Short answer: No.** In-session adaptation is handled entirely through prompt context and in-context learning — not gradient updates. Cross-session memory is stored as text summaries or user profiles injected into prompts. Model weights update on hourly-to-weekly cycles, never per-request.
 
@@ -1161,12 +1139,12 @@ If you're adding LLMs to an existing recommendation system, don't start with Pat
 
 | Question | Answer | Evidence |
 |----------|--------|----------|
-| How are recs displayed in conversational LLMs? | Hybrid: natural-language text + structured product cards/carousels — never pure text | All 5 major systems (Rufus, ChatGPT, Perplexity, Booking, Gemini) use cards with images, prices, ratings, action buttons |
-| Does in-session feedback update the model? | No — it's prompt context / in-context learning only | Survey [arxiv:2507.21117] confirms "zero-shot adaptation through prompt composition, not gradient updates" |
-| Do models retrain in real-time? | No — features update in ms, embeddings in minutes, weights hourly-to-weekly | Instagram Explore: hourly fine-tune. Spotify embeddings: minutes. Netflix: days-weeks. |
-| Is there cross-session memory? | Yes — via stored text summaries or user profiles, injected into prompts | Rufus account memory (weeks/months), ChatGPT Memory, Perplexity session memory, Tolan vector memory |
-| Are bandits used for exploration? | Yes, widely deployed on top of ranking models | Netflix artwork (125M users), Spotify homepage, DoorDash UCB |
-| Can you buy directly in the chat? | Yes, as of 2026 | ChatGPT Instant Checkout (Stripe), Google Gemini checkout, Perplexity "Buy with Pro" |
+| Does in-session negative feedback update the model? | No — it's prompt context / in-context learning only | Survey [arxiv:2507.21117] confirms "zero-shot adaptation through prompt composition, not gradient updates" |
+| How fast do negative signals reach the model? | Features: ms. Embeddings: minutes. Weights: hourly-to-weekly. | Instagram Explore: hourly fine-tune. Spotify embeddings: minutes. Netflix: days-weeks. |
+| What negative signals are captured? | Dismissals, skips, thumbs-down, "not interested" clicks, short dwell time, session abandonment | Meta uses composite reward (clicks + watch time + survey responses). Netflix uses proxy rewards for delayed feedback. |
+| Is there cross-session memory of dislikes? | Yes — via stored text summaries or user profiles, injected into prompts | Rufus account memory (weeks/months), ChatGPT Memory, Perplexity session memory, Tolan vector memory |
+| Are bandits used to reduce bad recs? | Yes, widely deployed — bandits naturally reduce exposure to disliked content as uncertainty drops | Netflix artwork (125M users), Spotify homepage, DoorDash UCB |
+| Does anyone do real-time model weight updates from feedback? | No production system does per-request weight updates | Latency (~200ms budget), catastrophic forgetting, infrastructure complexity prevent it |
 | What's the dominant 2026 trend? | Agentic recommendation — proactive, planning, memory-equipped agents | Criteo MCP launch, OpenAI+Stripe Agentic Commerce Protocol, WWW 2026 workshop |
 | Are generative rec models production-ready? | Yes, outperforming cascaded pipelines | Kuaishou OneRec (+1.68% watch time), Netflix Foundation Model, Pinterest PinRec |
 | LLM or traditional for warm users? | Traditional CF/DL wins | Multiple benchmarks; [arxiv:2503.05493] finds mixed results for LLMs |
