@@ -326,6 +326,232 @@ def generate_data_scaling():
     print("✓ sft_data_scaling.png")
 
 
+# ─────────────────────────────────────────────────────────
+# 7. Single Forward Pass
+# ─────────────────────────────────────────────────────────
+def generate_single_forward_pass():
+    """Show that one token in → N layers → one probability distribution out."""
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    # Draw the token sequence on the left
+    tokens = ['The', 'cat', 'sat', 'on', '???']
+    for i, tok in enumerate(tokens):
+        color = TRAIN_COLOR if i < 4 else ACCENT
+        alpha = 0.4 if i < 3 else 1.0
+        rect = mpatches.FancyBboxPatch(
+            (0.5 + i * 1.4, 3.5), 1.1, 0.8,
+            boxstyle="round,pad=0.08",
+            facecolor=color, edgecolor='#666', linewidth=1, alpha=alpha
+        )
+        ax.add_patch(rect)
+        ax.text(1.05 + i * 1.4, 3.9, tok, ha='center', va='center',
+                fontsize=11, color='white', fontweight='bold', alpha=alpha if i < 3 else 1)
+
+    # Arrow from "on" into the stack
+    ax.annotate('', xy=(5.5, 2.9), xytext=(5.5, 3.45),
+                arrowprops=dict(arrowstyle='->', color='#333', lw=2))
+    ax.text(5.5, 3.15, '"on"', ha='center', va='center', fontsize=9, color='#666')
+
+    # Draw N-layer transformer stack
+    n_layers = 6
+    stack_x = 3.8
+    stack_w = 3.4
+    for i in range(n_layers):
+        y = 2.6 - i * 0.4
+        shade = 0.3 + i * 0.1
+        rect = mpatches.FancyBboxPatch(
+            (stack_x, y), stack_w, 0.32,
+            boxstyle="round,pad=0.05",
+            facecolor=plt.cm.Blues(shade), edgecolor='#999', linewidth=0.8
+        )
+        ax.add_patch(rect)
+        label = f'Layer {i+1}' if i < 2 or i == n_layers - 1 else ('...' if i == 3 else '')
+        if label:
+            ax.text(stack_x + stack_w / 2, y + 0.16, label,
+                    ha='center', va='center', fontsize=9, color='white', fontweight='bold')
+
+    # Arrow out of the stack
+    ax.annotate('', xy=(5.5, -0.15), xytext=(5.5, 0.25),
+                arrowprops=dict(arrowstyle='->', color='#333', lw=2))
+
+    # Output probability distribution (simplified bar chart)
+    out_words = ['the', 'a', 'his', 'my', 'her']
+    out_probs = [0.45, 0.2, 0.15, 0.1, 0.1]
+    bar_x_start = 3.8
+    bar_width = 0.55
+    for i, (w, p) in enumerate(zip(out_words, out_probs)):
+        x = bar_x_start + i * (bar_width + 0.12)
+        bar_h = p * 1.8
+        color = ACCENT if i == 0 else '#BBBBBB'
+        rect = mpatches.FancyBboxPatch(
+            (x, -0.2 - bar_h), bar_width, bar_h,
+            boxstyle="round,pad=0.03",
+            facecolor=color, edgecolor='#999', linewidth=0.5
+        )
+        ax.add_patch(rect)
+        ax.text(x + bar_width / 2, -0.25 - bar_h, f'{w}\n{p:.0%}',
+                ha='center', va='top', fontsize=7.5, color='#444')
+
+    # Labels
+    ax.text(5.5, 4.6, 'One token = one forward pass through the entire stack',
+            ha='center', va='center', fontsize=13, fontweight='bold', color='#333')
+    ax.text(5.5, -1.6, 'Output: probability distribution over vocabulary',
+            ha='center', va='center', fontsize=10, color='#666')
+    ax.text(1.5, 4.55, 'Context so far', ha='center', va='center',
+            fontsize=9, color='#888')
+
+    # Side note
+    ax.text(9.2, 1.5, 'Same N layers,\nsame compute,\nevery single token.\n\nNo way to\n"think harder."',
+            ha='center', va='center', fontsize=10, color=ACCENT,
+            fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='#FFF3F3', edgecolor=ACCENT, alpha=0.8))
+
+    ax.set_xlim(-0.2, 11)
+    ax.set_ylim(-2.2, 5.0)
+    ax.axis('off')
+
+    plt.savefig(os.path.join(OUT_DIR, 'sft_single_forward_pass.png'))
+    plt.close()
+    print("✓ sft_single_forward_pass.png")
+
+
+# ─────────────────────────────────────────────────────────
+# 8. Tokens as Computation (answer-first vs think-first)
+# ─────────────────────────────────────────────────────────
+def generate_tokens_as_computation():
+    """Side-by-side: answer-first (wrong) vs think-first (right) with apple/orange example."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    def draw_approach(ax, title, title_color, tokens, colors, result, result_color, annotation):
+        ax.set_title(title, fontsize=13, fontweight='bold', color=title_color, pad=15)
+
+        y = 0.92
+        for i, (tok, col) in enumerate(zip(tokens, colors)):
+            ax.text(0.05, y - i * 0.085, tok, transform=ax.transAxes, fontsize=10,
+                    fontfamily='monospace',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=col, alpha=0.7, edgecolor='#ccc'))
+
+        # Result box
+        ax.text(0.5, 0.05, result, transform=ax.transAxes, fontsize=12,
+                ha='center', va='center', fontweight='bold', color=result_color,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor=result_color, alpha=0.15, edgecolor=result_color))
+
+        # Side annotation
+        ax.text(0.95, 0.5, annotation, transform=ax.transAxes, fontsize=9,
+                ha='right', va='center', color='#888', style='italic',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='#f9f9f9', edgecolor='#ddd'))
+
+        ax.axis('off')
+
+    # Left: Answer-first (WRONG)
+    left_tokens = [
+        'Q: I have 3 apples and 2 oranges. How many fruits?',
+        'A: 4',  # wrong — committed answer before thinking
+        '',
+        '(The model already output "4" — no room to compute)',
+    ]
+    left_colors = ['#E8E8E8', '#FFD4D4', '#FFFFFF', '#FFF8F0']
+
+    draw_approach(ax1, 'Answer-First: WRONG', ACCENT,
+                  left_tokens, left_colors,
+                  'Answer: 4  ✗', ACCENT,
+                  '1 forward pass\nfor the answer.\n\nNo computation\nhappened yet!')
+
+    # Right: Think-first (CORRECT)
+    right_tokens = [
+        'Q: I have 3 apples and 2 oranges. How many fruits?',
+        'A: Let me think step by step.',
+        '• Apples: 3',
+        '• Oranges: 2',
+        '• Total: 3 + 2 = 5',
+        'The answer is 5.',
+    ]
+    right_colors = ['#E8E8E8', '#D4E8D4', '#D4E8D4', '#D4E8D4', '#D4E8D4', '#C4DFC4']
+
+    draw_approach(ax2, 'Think-First: CORRECT', '#2E7D32',
+                  right_tokens, right_colors,
+                  'Answer: 5  ✓', '#2E7D32',
+                  '5 forward passes\nfor intermediate\nsteps.\n\nEach token =\nmore compute!')
+
+    plt.suptitle('Tokens as Computation: The Model Needs Tokens to Think',
+                 fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT_DIR, 'sft_tokens_as_computation.png'))
+    plt.close()
+    print("✓ sft_tokens_as_computation.png")
+
+
+# ─────────────────────────────────────────────────────────
+# 9. Jagged Intelligence Profile
+# ─────────────────────────────────────────────────────────
+def generate_jagged_intelligence():
+    """Horizontal bar chart: superhuman at some tasks, failing at others."""
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    tasks = [
+        'Text summarization',
+        'Translation',
+        'Code generation',
+        'Legal analysis',
+        'Math word problems',
+        'Trivia / factual recall',
+        'Spatial reasoning',
+        'Counting characters',
+        'Multi-digit multiplication',
+        'Spelling / anagrams',
+    ]
+    # Relative capability score (0-100, where 50 = average human)
+    scores = [92, 90, 85, 80, 72, 65, 30, 15, 20, 10]
+    tasks = tasks[::-1]
+    scores = scores[::-1]
+
+    colors = []
+    for s in scores:
+        if s >= 75:
+            colors.append('#2E7D32')  # green — superhuman
+        elif s >= 50:
+            colors.append(TRAIN_COLOR)  # blue — above average
+        elif s >= 35:
+            colors.append('#FFA500')  # orange — below average
+        else:
+            colors.append(ACCENT)  # red — failing
+
+    bars = ax.barh(tasks, scores, color=colors, height=0.6, edgecolor='white', linewidth=1)
+
+    # Human baseline line
+    ax.axvline(x=50, color='#333', linestyle='--', linewidth=1.5, alpha=0.7)
+    ax.text(51, len(tasks) - 0.3, 'Average human', fontsize=9, color='#555',
+            va='bottom', style='italic')
+
+    # Score labels
+    for bar, score in zip(bars, scores):
+        x = bar.get_width() + 1.5
+        ax.text(x, bar.get_y() + bar.get_height() / 2, f'{score}',
+                va='center', fontsize=10, fontweight='bold', color='#444')
+
+    # Legend
+    legend_items = [
+        mpatches.Patch(color='#2E7D32', label='Superhuman (75+)'),
+        mpatches.Patch(color=TRAIN_COLOR, label='Above average (50-74)'),
+        mpatches.Patch(color='#FFA500', label='Below average (35-49)'),
+        mpatches.Patch(color=ACCENT, label='Failing (< 35)'),
+    ]
+    ax.legend(handles=legend_items, loc='lower right', fontsize=9, framealpha=0.9)
+
+    ax.set_xlabel('Capability Score (50 = average human)', fontsize=11)
+    ax.set_title('Jagged Intelligence: The Same Model, Wildly Different Abilities',
+                 fontsize=13, fontweight='bold', pad=15)
+    ax.set_xlim(0, 105)
+    ax.grid(True, alpha=0.2, axis='x')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT_DIR, 'sft_jagged_intelligence.png'))
+    plt.close()
+    print("✓ sft_jagged_intelligence.png")
+
+
 if __name__ == '__main__':
     generate_loss_mask_heatmap()
     generate_training_loss_curve()
@@ -333,4 +559,7 @@ if __name__ == '__main__':
     generate_lr_comparison()
     generate_masking_comparison()
     generate_data_scaling()
+    generate_single_forward_pass()
+    generate_tokens_as_computation()
+    generate_jagged_intelligence()
     print("\nAll SFT diagrams generated!")

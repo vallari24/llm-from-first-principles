@@ -27,7 +27,13 @@
     - [Hallucination: Why SFT Models Make Things Up](#hallucination-why-sft-models-make-things-up)
     - [Mitigation #1: Teach the Model to Say "I Don't Know"](#mitigation-1-teach-the-model-to-say-i-dont-know)
     - [Mitigation #2: Teach the Model to Use Tools](#mitigation-2-teach-the-model-to-use-tools)
-18. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
+18. [Jagged Intelligence: Brilliant and Broken](#jagged-intelligence-brilliant-and-broken)
+    - [One Token, One Forward Pass](#one-token-one-forward-pass)
+    - [Tokens as Computation: Think Before You Speak](#tokens-as-computation-think-before-you-speak)
+    - [Tokenization's Sharp Edges](#tokenizations-sharp-edges)
+    - [When the Model Should Use Tools, Not Tokens](#when-the-model-should-use-tools-not-tokens)
+    - [Sharp Edges in 2026: What's Solved, What Isn't](#sharp-edges-in-2026-whats-solved-what-isnt)
+19. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
 
 ---
 
@@ -977,6 +983,134 @@ Tool use isn't a separate capability bolted onto the model. It's SFT with a diff
 The pattern is always the same: define special tokens, create training examples that demonstrate the behavior, fine-tune with loss masking. The system around the model watches for specific tokens and takes action. The model itself is still just autocompleting — but the special tokens give it a way to *request* actions from the outside world.
 
 This is why understanding SFT deeply matters. Every major capability of modern chatbots — chat, tool use, code execution, function calling — is built on the same foundation: structured training data with special tokens, and a system that acts on those tokens at inference time.
+
+---
+
+## Jagged Intelligence: Brilliant and Broken
+
+Here's something that becomes obvious once you've built a transformer from scratch but is deeply counterintuitive to everyone else: **the same model that writes better legal briefs than most lawyers cannot count the letters in "strawberry."**
+
+This isn't a bug that will get fixed with more training data. It's a structural property of how transformers process information. Understanding *why* is essential for knowing when to use SFT to teach the model new behaviors — and when to teach it to call a tool instead.
+
+### One Token, One Forward Pass
+
+Every token the model generates costs exactly the same amount of compute: one forward pass through the entire transformer stack.
+
+![Single forward pass through transformer layers](diagrams/sft_single_forward_pass.png)
+
+When you type a message and the model responds, here's what happens for **each output token**:
+
+1. The entire context (your message + everything generated so far) feeds into Layer 1
+2. Attention and feedforward, Layer 1 → Layer 2 → ... → Layer N
+3. The final layer produces a probability distribution over the vocabulary
+4. One token is sampled
+5. That token gets appended to the context
+6. Go back to step 1 for the next token
+
+The key insight: **there is no mechanism for the model to "think harder."** It can't loop, can't recurse, can't allocate extra compute to a difficult problem. Whether it's generating "the" or solving a differential equation, it gets the same N layers of processing. One forward pass. That's it.
+
+This has a profound consequence: **the only way for the model to get more compute is to generate more tokens.**
+
+### Tokens as Computation: Think Before You Speak
+
+This explains why chain-of-thought works — and why it's not just a prompting trick but a fundamental computational necessity.
+
+Consider this example:
+
+![Answer-first vs think-first comparison](diagrams/sft_tokens_as_computation.png)
+
+**Answer-first:** "I have 3 apples and 2 oranges. How many fruits?" → "4"
+
+The model got one forward pass to produce the answer token. That single pass had to simultaneously parse the question, identify the quantities, decide on the operation, compute the result, and select the output token. For a simple problem like this, that's already pushing the limits of what N layers of matrix multiplication can do in a single pass.
+
+**Think-first:** "Let me think step by step. Apples: 3. Oranges: 2. Total: 3 + 2 = 5."
+
+Now the model gets **five forward passes** before committing to the answer. Each intermediate token is a computational step — the "3" token lets the model "store" the apple count in the context where attention can retrieve it. The "+" token activates arithmetic circuits. The "5" token is generated after all the intermediate computation has happened.
+
+> **Key insight:** Chain-of-thought tokens aren't explanations. They're *computation*. Each token is a scratch step that gives the model another N layers of processing. SFT is how we teach the model to produce these computational tokens — the CoT training data shows the model that certain questions should be preceded by step-by-step reasoning before the final answer.
+
+This is exactly the same SFT pattern as everything else: the training data demonstrates the behavior (step-by-step reasoning), and the model learns to produce intermediate tokens before the answer. The loss is computed on the reasoning *and* the answer, teaching the model that the steps matter too.
+
+### Tokenization's Sharp Edges
+
+Here's a different kind of structural limitation. When the tokenizer processes "strawberry," it doesn't produce `["s", "t", "r", "a", "w", "b", "e", "r", "r", "y"]`. It produces something like:
+
+```
+"strawberry" → ["str", "awber", "ry"]
+```
+
+Three tokens. The model **literally cannot see** individual characters. When you ask "how many r's in strawberry?", the model has to reason about characters that don't exist as individual units in its representation. It's like asking someone to count the number of times a specific brushstroke appears in a painting — while only showing them the painting from across the room.
+
+This isn't a reasoning failure. It's an **input representation problem**. The model can't count what it can't see.
+
+The same issue causes failures in:
+
+| Task | Why it fails | Root cause |
+|---|---|---|
+| Spelling words | Characters are merged into subword tokens | Can't access individual letters |
+| Counting characters | "r" might be split across tokens | Can't isolate what to count |
+| Anagrams | Rearranging letters requires seeing letters | Only sees token chunks |
+| Reversing strings | Position of characters within tokens is invisible | Subword abstraction hides character order |
+| Simple arithmetic on large numbers | "1847293" → multiple tokens with no digit boundaries | Digit positions aren't token positions |
+
+Notice the pattern: these failures aren't about "intelligence." A model that can analyze a Supreme Court opinion and identify subtle legal contradictions fails at tasks a 5-year-old handles easily — because the 5-year-old can see individual letters and the model can't.
+
+### When the Model Should Use Tools, Not Tokens
+
+This is where SFT becomes crucial again. If the model is structurally unable to count letters, **the right solution isn't more training data — it's teaching the model to delegate to a tool.**
+
+This is exactly what we already saw in tool use SFT. The same pattern applies:
+
+```
+User: How many r's in "strawberry"?
+
+# What SFT teaches the model to generate:
+<CODE>
+word = "strawberry"
+count = word.count('r')
+print(f"There are {count} r's in strawberry")
+</CODE>
+
+# System executes the code, injects result:
+<CODE_RESULT>
+There are 3 r's in strawberry
+</CODE_RESULT>
+
+There are 3 r's in "strawberry".
+```
+
+The model learned via SFT (with `<CODE>` special tokens and loss masking) to recognize that character-counting questions should trigger code execution. It doesn't need to count — it needs to write a Python one-liner that counts. The code interpreter sees individual characters perfectly because it operates on bytes, not subword tokens.
+
+The same pattern applies across structural blind spots:
+
+| Blind spot | Tool | SFT teaches |
+|---|---|---|
+| Character counting | Code interpreter | Generate `<CODE>` for string operations |
+| Multi-digit arithmetic | Code interpreter | Generate `<CODE>` for math |
+| Factual accuracy | Search | Generate `<SEARCH>` for claims |
+| Spatial reasoning | Code + visualization | Generate code that computes geometry |
+
+**This is why "jagged intelligence" matters for SFT practitioners.** You're not just teaching the model what to say — you're teaching it *when to stop relying on tokens and start relying on tools*. The SFT training data has to include examples where the correct behavior is to invoke a tool, not to attempt the task with raw generation.
+
+### Sharp Edges in 2026: What's Solved, What Isn't
+
+![Jagged intelligence profile across tasks](diagrams/sft_jagged_intelligence.png)
+
+The landscape is evolving rapidly. Here's where things stand:
+
+| Limitation | Status (2026) | What's helping |
+|---|---|---|
+| Character-level tasks (spelling, counting) | **Mitigated** — tool use widespread | Code interpreter via SFT; byte-level tokenizers (Meta's BLT) in research |
+| Arithmetic | **Mostly solved** — tool use + training | Code interpreter; dedicated math training data; RL on verifiable problems |
+| Factual hallucination | **Mitigated** — not eliminated | Search tools via SFT; RAG pipelines; attribution training |
+| Spatial reasoning | **Improving slowly** | Multimodal models; code-based geometry; still weak without tools |
+| Planning over long horizons | **Active research** | RL helps more than SFT here; tree search; agent scaffolding |
+| Consistent character/persona | **Solved by SFT** | System prompts + identity training data; robust with modern SFT |
+| Overthinking (wasting tokens on easy problems) | **New problem** | Latent CoT research; "thinking budget" approaches; adaptive compute |
+
+The "overthinking" problem is particularly interesting. Chain-of-thought gives the model more compute per answer, but the model can't always judge *how much* compute to allocate. A question like "What's the capital of France?" doesn't need 500 reasoning tokens. Current research on **latent chain-of-thought** (reasoning in hidden states rather than output tokens) and **adaptive compute** (variable-depth processing) aims to solve this — but as of 2026, the dominant approach is still SFT: train the model on examples where easy questions get short answers and hard questions get detailed reasoning.
+
+> **The bottom line:** Jagged intelligence isn't a flaw to be fixed — it's a structural property to be understood. SFT is the tool we use to teach models to route around their blind spots: generate reasoning tokens when more compute helps, invoke tools when the task is structurally impossible with tokens alone, and keep it brief when the answer is obvious.
 
 ---
 
