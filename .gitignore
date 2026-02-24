@@ -25,3 +25,7 @@ nanoGPT/
 # IDE
 .vscode/
 .idea/
+
+# Local-only notes
+blog.md
+post-training-roadmap.md
