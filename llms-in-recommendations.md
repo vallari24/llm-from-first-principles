@@ -16,8 +16,9 @@
 6. [LLM vs Traditional — The Honest Comparison](#llm-vs-traditional--the-honest-comparison)
 7. [Research Frontier](#research-frontier)
 8. [Best Practices](#best-practices)
-9. [Conclusion](#conclusion)
-10. [References](#references)
+9. [Summary Table](#summary-table)
+10. [Conclusion](#conclusion)
+11. [References](#references)
 
 ---
 
@@ -569,6 +570,102 @@ Refined response ◀── LLM generation ◀── Retrieval (RAG / catalog)
 
 Each turn in the conversation updates the system's understanding of the user, which feeds back into retrieval and generation. This is fundamentally different from traditional RecSys, which learns from *actions* (clicks, purchases) — conversational systems learn from *stated preferences* in real time.
 
+#### How Recommendations Are Displayed
+
+Every major conversational recommender converges on the same pattern: **hybrid text + structured rich cards**, not pure prose. The LLM generates a natural-language response *and* structured product/item cards rendered inline. The critical architectural question is how the model signals which display component to render.
+
+| System | Display Format | Card Contents | Purchase Flow |
+|--------|---------------|---------------|---------------|
+| **Amazon Rufus** | Hydration markup — LLM emits structured tags, populated with live catalog data | Product image, title, price, ratings, category chips | Links to Amazon PDP |
+| **ChatGPT Shopping** | Horizontal scrollable carousel inline in chat | Normalized image, AI-simplified title, price, aggregated ratings, AI feature labels ("Best budget choice") | Instant Checkout via Stripe (2026) |
+| **Perplexity Shopping** | Product cards below cited text answer | Product name, price, seller, pros/cons (unique differentiator) | "Buy with Pro" one-click + PayPal |
+| **Booking.com** | Visual property list with deep-links | Property photos, pricing, availability | One-tap booking via deep-link |
+| **Google Gemini** | Side-by-side comparisons with conversational follow-ups | Product images, prices, reviews, "Direct Offers" discounts | UCP-powered checkout (Etsy, Wayfair, Shopify, Target, Walmart) |
+
+**Amazon Rufus's hydration architecture** is the most technically interesting: the LLM itself decides the display format by emitting markup instructions within its response. These specify whether to render a long-form text answer, a short-form snippet, a clickable navigation link, or a product carousel — then the frontend populates the markup with live data from Amazon's catalog systems. For broad queries ("good gifts for Valentine's Day"), Rufus emits category navigation chips. For specific queries, it emits product cards. The Lens Live integration renders a swipeable carousel below the camera view. Source: [amazon.science/blog/the-technology-behind-amazons-genai-powered-shopping-assistant-rufus](https://www.amazon.science/blog/the-technology-behind-amazons-genai-powered-shopping-assistant-rufus)
+
+**ChatGPT Shopping** runs two parallel fan-out queries: contextual queries for the written text portion, and Google Shopping searches for the product carousel data. Each card gets AI-generated feature labels ("Compact design", "Most popular") synthesized from reviews and product details. As of 2026, Instant Checkout via the Agentic Commerce Protocol (built with Stripe, open-sourced under Apache 2.0) lets users complete purchases without leaving the chat. Live with Etsy; Shopify merchants (Glossier, SKIMS, Spanx, Vuori) and Target rolling out. Source: [openai.com/index/buy-it-in-chatgpt](https://openai.com/index/buy-it-in-chatgpt), [github.com/agentic-commerce-protocol](https://github.com/agentic-commerce-protocol/agentic-commerce-protocol)
+
+**Perplexity Shopping** distinguishes itself with pros/cons on every card and a "View more" expandable side panel with consolidated review summaries and source citations. "Snap to Shop" adds photo-based visual search. Perplexity decided against advertising in Feb 2026 to preserve trust. Source: [perplexity.ai/hub/blog/shopping-that-puts-you-first](https://perplexity.ai/hub/blog/shopping-that-puts-you-first)
+
+**Google Gemini** (2026) added conversational follow-ups ("Show me these boots in blue") with side-by-side comparisons, "Personal Intelligence" connecting Gmail and Google Photos for personalized recommendations, and a Walmart partnership for product recs directly in Gemini. Source: [Bloomberg, Feb 2026](https://www.bloomberg.com/news/articles/2026-02-11/google-pushes-ai-shopping-features-in-search-and-gemini-chatbot)
+
+The emerging pattern is **Generative UI (GenUI)** — interfaces drawn in real-time based on user intent, not hard-coded. Amazon's hydration markup is an early production example. Jakob Nielsen's 2026 predictions highlight this as a major shift: apps generating bespoke micro-interfaces per task rather than routing users through pre-built screens.
+
+#### Does User Feedback Update Models in Real Time?
+
+**Short answer: No.** In-session adaptation is handled entirely through prompt context and in-context learning — not gradient updates. Cross-session memory is stored as text summaries or user profiles injected into prompts. Model weights update on hourly-to-weekly cycles, never per-request.
+
+The production architecture is a three-layer system:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                  THE FEEDBACK LOOP REALITY                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Layer 1: REAL-TIME FEATURES          Latency: milliseconds         │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Feature store serves fresh values (user just clicked X)     │   │
+│  │ Model weights frozen — only inputs change                   │   │
+│  │ Everyone does this: Meta, Spotify, Netflix, DoorDash        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Layer 2: NEAR-LINE EMBEDDINGS        Latency: minutes to hours     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ User embeddings recomputed from recent behavior             │   │
+│  │ Spotify: within minutes via NRT triggers                    │   │
+│  │ Instagram Explore: hourly model fine-tune                   │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Layer 3: BATCH MODEL RETRAIN         Latency: daily to weekly      │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Full model weight updates on accumulated data               │   │
+│  │ Validation, canary testing, gradual rollout                 │   │
+│  │ Everyone does this on different cadences                    │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Layer 0: BANDIT EXPLORATION          Latency: per-request          │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Thompson Sampling / UCB / epsilon-greedy on top of ranking  │   │
+│  │ Netflix artwork (125M users), Spotify homepage, DoorDash    │   │
+│  │ Handles uncertainty without retraining                      │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Company-specific update cadences:**
+
+| Company | What Updates | How Fast | Source |
+|---------|-------------|----------|--------|
+| **Meta / Instagram Explore** | Model fine-tune | **Every hour** via continual online training | [engineering.fb.com — Scaling Instagram Explore](https://engineering.fb.com/2023/08/09/ml-applications/scaling-instagram-explore-recommendations-system/) |
+| **Meta Reels** (Jan 2026) | User satisfaction alignment | Daily via UTIS survey model (+5.4% high ratings, +5.2% engagement) | [engineering.fb.com/2026/01/14](https://engineering.fb.com/2026/01/14/ml-applications/adapting-the-facebook-reels-recsys-ai-model-based-on-user-feedback/) |
+| **Spotify** | User embeddings | **Within minutes** via NRT triggers (3 temporal windows: 6mo/1mo/1wk) | [engineering.atspotify.com/2026/1](https://engineering.atspotify.com/2026/1/why-we-use-separate-tech-stacks-for-personalization-and-experimentation) |
+| **Netflix** | Proxy rewards | Days-weeks (explicitly acknowledges delayed feedback problem) | [netflixtechblog.com — Behind the Streams](https://netflixtechblog.com/behind-the-streams-real-time-recommendations-for-live-events-e027cb313f8f) |
+| **Netflix Live Events** | Real-time broadcast | Milliseconds (Kafka + WebSocket, 38M events/sec) | Same source |
+| **Tubi** | Inference-time feature override | Intra-day (model frozen, inputs freshened — +0.47% engagement) | [arxiv.org/abs/2512.14734](https://arxiv.org/html/2512.14734) |
+| **YouTube** | Model retrain | Hours to days ("Example Age" feature to avoid staleness bias) | Google Research |
+
+**In-session "learning" is prompt context, not model updates.** A 2025 survey on LLM-based recommender systems ([arxiv.org/abs/2507.21117](https://arxiv.org/html/2507.21117v2)) confirms the mechanism: LLMs perform "zero-shot adaptation through prompt composition rather than gradient-based embedding updates." When a user says "no, something cheaper," the system appends feedback to the conversation context and re-generates. Three constraints prevent real-time weight updates: (1) latency — recs must resolve in ~200ms, a gradient step takes orders of magnitude longer; (2) catastrophic forgetting — updating on one user degrades others; (3) infrastructure complexity.
+
+**Cross-session memory systems:**
+
+| System | Memory Type | What's Stored | Persistence |
+|--------|------------|---------------|-------------|
+| **Amazon Rufus** | Account memory | Shopping activity, hobbies, pets, family, preferences ("plastic-free packaging") | Weeks to months |
+| **ChatGPT Shopping** | Conversation memory | Natural-language summaries of past conversations and stated preferences | Persistent (if Memory enabled) |
+| **Perplexity** | Session memory | Past searches, aesthetic/style/functional preferences | Cross-session |
+| **Tolan AI** | Vector memory | Facts, preferences, emotional signals → embedded with text-embedding-3-large → Turbopuffer | Persistent |
+
+None of them update LLM weights per-user. It's all prompt injection of stored preferences.
+
+**Bandits for exploration:** Contextual bandits are widely deployed *on top of* recommendation models to handle the explore/exploit tradeoff without retraining:
+- **Spotify**: BaRT system (counterfactual risk minimization), homepage calibration via neural contextual bandits with epsilon-greedy (2025), centralized exploration for creator audience building
+- **Netflix**: Contextual bandits for artwork personalization tested on 125M users — "the regret incurred by exploration is typically very small and is amortized across our large member base"
+- **DoorDash**: UCB bandits for homepage exploitation/exploration, Thompson Sampling for cuisine preferences
+
+Sources: [eugeneyan.com/writing/bandits](https://eugeneyan.com/writing/bandits/), [research.atspotify.com](https://research.atspotify.com)
+
 ---
 
 **ChatGPT Shopping**
@@ -587,15 +684,15 @@ How personalization works:
 - Multi-step reasoning: searches, compares, synthesizes across sources
 - Signals: availability, price, quality, maker status (favoring independent makers when relevant)
 
-What makes this architecturally novel: it combines long-term memory (conversation history), collaborative signals (aggregate behavior), and real-time retrieval (web search) in a single conversational flow.
+What makes this architecturally novel: it combines long-term memory (conversation history), collaborative signals (aggregate behavior), and real-time retrieval (web search) in a single conversational flow. As of 2026, Instant Checkout (Stripe-powered Agentic Commerce Protocol) enables in-chat purchasing. ChatGPT Pulse (Pro users) can proactively suggest personalized buyer's guides based on past conversations.
 
-Source: [openai.com/index/chatgpt-shopping-research](https://openai.com/index/chatgpt-shopping-research)
+Source: [openai.com/index/chatgpt-shopping-research](https://openai.com/index/chatgpt-shopping-research), [openai.com/index/buy-it-in-chatgpt](https://openai.com/index/buy-it-in-chatgpt)
 
 ---
 
 **Amazon Rufus** *(detailed in Section 4.3)*
 
-Rufus is covered in the e-commerce section above. To summarize its conversational architecture: custom Nova models, RAG over full product catalog + 51M reviews, RL-optimized response quality, long-term account memory, and multi-model routing by query type.
+Rufus is covered in the e-commerce section above. To summarize its conversational architecture: custom Nova models, RAG over full product catalog + 51M reviews, RL-optimized response quality, long-term account memory, and multi-model routing by query type. As of 2025-2026, account memory persists preferences for weeks/months and learns hobbies, pets, and family composition. Users engaging with Rufus show **60% higher purchase likelihood** (250M+ users).
 
 ---
 
@@ -604,10 +701,12 @@ Rufus is covered in the e-commerce section above. To summarize its conversationa
 Architecture:
 - **Pattern**: Conversational search + recommendation
 - **Personalization**: Remembers past searches, learns user patterns over time
-- **Key differentiator**: Transparent and unbiased — results are not sponsored or paid placements
+- **Key differentiator**: Transparent and unbiased — decided against advertising (Feb 2026) to preserve trust
 - **Memory**: Learns aesthetic preferences, style preferences, and functional needs across sessions
+- **Visual search**: "Snap to Shop" — upload a photo to find matching/similar items
+- **Virtual try-on**: Create a virtual avatar to preview apparel
 
-How it differs from traditional e-commerce search: Perplexity analyzes contextual data for personalized results without being influenced by advertising. The conversational interface allows multi-turn refinement, and the system remembers preferences across sessions.
+How it differs from traditional e-commerce search: Perplexity analyzes contextual data for personalized results without being influenced by advertising. The conversational interface allows multi-turn refinement, and the system remembers preferences across sessions. "Buy with Pro" enables one-click purchase with pre-filled payment and free shipping.
 
 Source: [perplexity.ai/hub/blog](https://perplexity.ai/hub/blog)
 
@@ -777,6 +876,52 @@ Source: Alibaba research publications
 
 ---
 
+### Kuaishou OneRec — End-to-End Generative Recommendation (2025-2026)
+
+The first end-to-end generative model to significantly outperform cascaded retrieve-then-rank pipelines in production.
+
+Architecture:
+- **Design**: Encoder-decoder with Mixture of Experts (MoE) for parameter scaling
+- **Key innovation**: Session-wise list generation — generates an entire recommendation slate at once, not point-by-point next-item prediction
+- **Alignment**: Iterative preference alignment via DPO (Direct Preference Optimization) and Early-clipped GRPO
+- **Reward**: Learned P-Score blending clicks, watch time, and other signals per user
+
+Results:
+- On 25% of Kuaishou traffic, the pure generator matches the full multi-stage stack
+- Adding reward-model selection: **+0.54% app stay time** on main app, **+1.24% on Kuaishou Lite**
+- +1.68% total watch time, +6.56% average view duration
+- Training MFU of 23.7%, inference MFU of 28.8% — 5x improvement over the old ranker
+
+Open-sourced as **OpenOneRec** (2026): 1.7B and 8B parameter foundation models built on Qwen3 backbone, with both standard (open data) and Pro (hundred-billion-token industrial corpus) versions.
+
+Source: [arxiv.org/abs/2502.18965](https://arxiv.org/abs/2502.18965), [github.com/Kuaishou-OneRec/OpenOneRec](https://github.com/Kuaishou-OneRec/OpenOneRec)
+
+---
+
+### Netflix Foundation Model for Recommendations (2025-2026)
+
+Netflix built a transformer-style sequential foundation model trained with next-token and multi-token prediction at large scale for personalization.
+
+Architecture:
+- **Training**: Next-token and multi-token prediction on user interaction sequences
+- **Efficiency**: Sparse attention, sliding-window sampling, KV caching for low-latency inference
+- **Integration**: Three production approaches — embeddings (Pattern B), subgraph extraction, and fine-tuning for specific tasks
+- **Infrastructure**: Complex data pipelines, distributed state across multi-node GPU clusters
+
+This represents Netflix moving from the task-specific Llama fine-tuning (artwork personalization) toward a general-purpose recommendation foundation model.
+
+Source: [netflixtechblog.com/foundation-model-for-personalized-recommendation](https://netflixtechblog.com/foundation-model-for-personalized-recommendation-1a0bd8e02d39)
+
+---
+
+### Pinterest PinRec — Production Generative Retrieval (2025-2026)
+
+Pinterest's PinRec demonstrates that generative retrieval is production-ready for visual recommendations, with solutions for latency, cost, and control challenges in recommendation serving.
+
+Source: [shaped.ai/blog/pinrec-teardown](https://www.shaped.ai/blog/pinrec-teardown-inside-pinterests-production-ready-generative-retrieval-model)
+
+---
+
 ## LLM vs Traditional — The Honest Comparison
 
 The question everyone asks: "Should we use an LLM for recommendations?" The answer depends entirely on the scenario.
@@ -876,9 +1021,32 @@ The **distillation pattern** is essential: train or prompt a large LLM to genera
 | **TALLRec** | 2023 | Demonstrated LoRA fine-tuning of LLaMA for recommendation with minimal data |
 | **LlamaRec** | 2023 | Sequential recommendation using LLM with retriever-reranker pipeline |
 | **HSTU** (Meta) | 2024 | Trillion-parameter sequential transducers, 12.4% over DLRM |
-| **Netflix Artwork** | 2025 | SFT + distillation + DPO pipeline for personalized artwork |
 | **Data-Efficient FT** | 2024 | 2% of fine-tuning samples achieves full performance (SIGIR '24) |
+| **Netflix Artwork** | 2025 | SFT + distillation + DPO pipeline for personalized artwork |
 | **Process-Supervised LLM** | 2025 | Process supervision for LLM recommenders (SIGIR '25) |
+| **Rec-R1** | 2025 | RL framework bridging LLMs with RecSys via real-time reward signals from black-box rec models — no GPT-4 synthetic data needed |
+| **Agentic Feedback Loop (AFL)** | 2025 | Two LLM agents (recommender + user) iterate in feedback loop; +11.52% over single agent; does NOT amplify popularity bias |
+| **OneRec** (Kuaishou) | 2025 | First end-to-end generative model outperforming cascaded pipelines in production |
+| **HELM** | 2026 | Human-centered evaluation framework for LLM recommenders across 5 dimensions (WWW '26) |
+| **AlignUSER** | 2026 | World-model-driven LLM agents for user simulation in rec evaluation |
+
+### RL for Recommendations — Production Deployments
+
+Reinforcement learning in recommendation is mostly **batch/offline RL**, not fully online. The constraint is safety: a bad online policy update degrades the experience for millions of users.
+
+| Company | Method | Application |
+|---------|--------|-------------|
+| **Google/YouTube** | REINFORCE (policy gradient) | Video recommendations |
+| **Kuaishou** | Early-clipped GRPO + DPO | OneRec generative recommendation |
+| **Netflix** | GRPO with verifiable rewards | Artwork personalization |
+| **ByteDance** | Cascading DQNs | Joint rec + ad placement |
+| **Alibaba** | Actor-Critic (first deployed 2016 Double Eleven) | Search ranking; Virtual Taobao simulation environment |
+| **Microsoft** | DQN | News recs (click reward + long-term user activeness at 0.05 weight) |
+| **Amazon** | LAAC (LLM-guided Adversarial Actor Critic) | LLM as reference policy for novel item suggestion + lightweight RL to refine |
+
+**Rec-R1** ([arxiv.org/abs/2503.24289](https://arxiv.org/html/2503.24289v4)) is the most significant recent development: a general RL framework that optimizes LLM generation using real-time reward signals from a fixed, black-box recommendation model — without relying on synthetic data from proprietary models. This represents the convergence of RLHF techniques (from LLM alignment) with recommendation optimization.
+
+Source: [eugeneyan.com/writing/reinforcement-learning-for-recsys-and-search](https://eugeneyan.com/writing/reinforcement-learning-for-recsys-and-search/)
 
 ### Frameworks and Tools
 
@@ -887,14 +1055,35 @@ The **distillation pattern** is essential: train or prompt a large LLM to genera
 | **RecBole** | Unified recommendation library with 90+ models | [recbole.io](https://recbole.io) |
 | **Microsoft RecAI** | LLM-powered recommendation agent toolkit | [github.com/microsoft/RecAI](https://github.com/microsoft/RecAI) |
 | **Microsoft InteRecAgent** | Interactive recommendation agent built on LLMs | Part of RecAI |
+| **OpenOneRec** (Kuaishou) | Open-source generative rec foundation models (1.7B, 8B) on Qwen3 | [github.com/Kuaishou-OneRec/OpenOneRec](https://github.com/Kuaishou-OneRec/OpenOneRec) |
 | **Eugene Yan's Guide** | Comprehensive practitioner's guide to LLMs for RecSys | [eugeneyan.com/writing/recsys-llm](https://eugeneyan.com/writing/recsys-llm) |
 
 ### Active Research Labs
 
 - **Google DeepMind**: Semantic IDs, Large Recommendation Models, Gemini for recs
-- **Meta AI**: HSTU, M-FALCON inference, GEM for ads
+- **Meta AI**: HSTU, M-FALCON inference, GEM for ads, Reels UTIS feedback alignment
 - **Microsoft Research**: RecAI, InteRecAgent, conversational recommendation
 - **Alibaba DAMO Academy**: SAID cold-start, industrial-scale LLM recs
+- **Kuaishou**: OneRec generative recommendation, open-source foundation models
+
+### 2026 Trends
+
+**1. Agentic Recommendation is the dominant new paradigm.** Systems that proactively plan, remember, and act — not just passively respond to queries. Criteo launched an Agentic Commerce Recommendation Service via Model Context Protocol (MCP), leveraging 720M daily shoppers and $1T in transaction data, showing 60% improvement in relevancy. OpenAI + Stripe open-sourced the Agentic Commerce Protocol. WWW 2026 has a dedicated workshop on "LLM & Agents for Recommendation Systems." Source: [criteo.com](https://www.criteo.com/news/press-releases/2026/02/criteo-introduces-agentic-commerce-recommendation-service-to-power-ai-shopping-assistants/), [llmandagents4recsys.github.io](https://llmandagents4recsys.github.io/)
+
+**2. Generative recommendation models going mainstream.** Kuaishou's OneRec, Netflix's Foundation Model, and Pinterest's PinRec all demonstrate that end-to-end generative models (encoder-decoder, next-token prediction) are outperforming traditional cascaded retrieve-then-rank pipelines in production. Kuaishou open-sourced 1.7B and 8B parameter models.
+
+**3. In-chat purchasing (zero-click commerce).** ChatGPT Instant Checkout (Stripe), Google Gemini checkout (Etsy, Wayfair, Shopify, Target, Walmart), and Perplexity "Buy with Pro" all enable purchasing without leaving the conversation. About one-third of U.S. consumers would let AI make purchases for them. Source: [gorgias.com/state-of-conversational-commerce-2026](https://www.gorgias.com/state-of-conversational-commerce-2026)
+
+**4. Dual-pipeline architectures.** Spotify's Jan 2026 engineering blog confirms the production pattern: separate tech stacks for stable personalization (low-latency, high-availability) and experimentation (bold LLM experiments without risking production). Source: [engineering.atspotify.com/2026/1](https://engineering.atspotify.com/2026/1/why-we-use-separate-tech-stacks-for-personalization-and-experimentation)
+
+**5. Evaluation frameworks catching up.** HELM (WWW '26) evaluates LLM recommenders across intent alignment, explanation quality, interaction naturalness, trust/transparency, and fairness/diversity. GPT-4 scores 4.35/5.0 on interaction naturalness but shows significant popularity bias (Gini 0.73). Source: [arxiv.org/abs/2601.19197](https://arxiv.org/abs/2601.19197)
+
+### Upcoming Conferences
+
+- **WWW 2026** (Sydney, Apr-May): LLM & Agents for RecSys workshop
+- **RecSys 2026** (Minneapolis, Sep 28 - Oct 2): 20th ACM Conference on Recommender Systems
+- **SIGIR 2026**: Submissions open on OpenReview
+- **ICLR 2026** (Singapore, Apr): MemAgents workshop on memory for LLM-based agents
 
 ### Open Questions
 
@@ -904,9 +1093,11 @@ The **distillation pattern** is essential: train or prompt a large LLM to genera
 
 3. **Real-time LLM serving for recs**: Can we get LLM inference fast enough for latency-critical paths (ads, real-time ranking) without reducing the model to a feature generator? Or is offline feature extraction the permanent architecture?
 
-4. **User simulation**: Can LLMs simulate user behavior well enough to generate synthetic training data for traditional recommenders? Early results (LinkedIn, Instacart) suggest yes for some use cases.
+4. **User simulation**: Can LLMs simulate user behavior well enough to generate synthetic training data for traditional recommenders? Early results (LinkedIn, Instacart) suggest yes. AlignUSER (2026) uses world-model-driven LLM agents for this.
 
-5. **Unification**: Is the future one model for all recommendation tasks (like LinkedIn 360Brew) or specialized models per surface? The field is split.
+5. **Unification**: Is the future one model for all recommendation tasks (like LinkedIn 360Brew, Kuaishou OneRec) or specialized models per surface? The field is split, but evidence is tilting toward unified generative models.
+
+6. **Agentic commerce protocols**: Will MCP / Agentic Commerce Protocol become the standard integration layer between AI shopping assistants and merchant inventory? Early signals point yes.
 
 ---
 
@@ -966,6 +1157,23 @@ If you're adding LLMs to an existing recommendation system, don't start with Pat
 
 ---
 
+## Summary Table
+
+| Question | Answer | Evidence |
+|----------|--------|----------|
+| How are recs displayed in conversational LLMs? | Hybrid: natural-language text + structured product cards/carousels — never pure text | All 5 major systems (Rufus, ChatGPT, Perplexity, Booking, Gemini) use cards with images, prices, ratings, action buttons |
+| Does in-session feedback update the model? | No — it's prompt context / in-context learning only | Survey [arxiv:2507.21117] confirms "zero-shot adaptation through prompt composition, not gradient updates" |
+| Do models retrain in real-time? | No — features update in ms, embeddings in minutes, weights hourly-to-weekly | Instagram Explore: hourly fine-tune. Spotify embeddings: minutes. Netflix: days-weeks. |
+| Is there cross-session memory? | Yes — via stored text summaries or user profiles, injected into prompts | Rufus account memory (weeks/months), ChatGPT Memory, Perplexity session memory, Tolan vector memory |
+| Are bandits used for exploration? | Yes, widely deployed on top of ranking models | Netflix artwork (125M users), Spotify homepage, DoorDash UCB |
+| Can you buy directly in the chat? | Yes, as of 2026 | ChatGPT Instant Checkout (Stripe), Google Gemini checkout, Perplexity "Buy with Pro" |
+| What's the dominant 2026 trend? | Agentic recommendation — proactive, planning, memory-equipped agents | Criteo MCP launch, OpenAI+Stripe Agentic Commerce Protocol, WWW 2026 workshop |
+| Are generative rec models production-ready? | Yes, outperforming cascaded pipelines | Kuaishou OneRec (+1.68% watch time), Netflix Foundation Model, Pinterest PinRec |
+| LLM or traditional for warm users? | Traditional CF/DL wins | Multiple benchmarks; [arxiv:2503.05493] finds mixed results for LLMs |
+| LLM or traditional for cold-start? | LLM wins | YouTube LRM, Alibaba SAID, Instacart tail queries |
+
+---
+
 ## Conclusion
 
 LLMs extend recommendation systems. They don't replace them.
@@ -990,23 +1198,32 @@ For the fine-tuning techniques behind these systems — SFT, DPO, GRPO, distilla
 | Company | System | Source |
 |---------|--------|--------|
 | Netflix | Artwork personalization (Llama 3.1 8B, SFT+DPO) | [arxiv.org/abs/2601.02764](https://arxiv.org/abs/2601.02764) |
+| Netflix | Foundation Model for recommendations | [netflixtechblog.com](https://netflixtechblog.com/foundation-model-for-personalized-recommendation-1a0bd8e02d39) |
 | Spotify | Text2Tracks, AI DJ, narrative recs | [research.atspotify.com](https://research.atspotify.com) |
-| Meta | GEM (Generative Ads Model) | [engineering.fb.com](https://engineering.fb.com) |
+| Spotify | Dual personalization/experimentation stacks (Jan 2026) | [engineering.atspotify.com/2026/1](https://engineering.atspotify.com/2026/1/why-we-use-separate-tech-stacks-for-personalization-and-experimentation) |
+| Meta | GEM (Generative Ads Model) | [engineering.fb.com](https://engineering.fb.com/2025/11/10/ml-applications/metas-generative-ads-model-gem-the-central-brain-accelerating-ads-recommendation-ai-innovation/) |
+| Meta | Reels UTIS feedback alignment (Jan 2026) | [engineering.fb.com/2026/01/14](https://engineering.fb.com/2026/01/14/ml-applications/adapting-the-facebook-reels-recsys-ai-model-based-on-user-feedback/) |
+| Meta | Instagram Explore (hourly model updates) | [engineering.fb.com](https://engineering.fb.com/2023/08/09/ml-applications/scaling-instagram-explore-recommendations-system/) |
 | YouTube/Google | Large Recommendation Model, Semantic IDs | Google Research |
+| Google | Gemini shopping + Walmart partnership (Jan 2026) | [9to5google.com](https://9to5google.com/2026/01/12/google-and-walmart-partner-to-bring-ai-shopping-recommendations-to-gemini/) |
 | LinkedIn | 360Brew (unified 150B model) | [arxiv.org/abs/2501.16450](https://arxiv.org/abs/2501.16450) |
 | LinkedIn | JUDE (job embeddings) | [linkedin.com/blog/engineering](https://linkedin.com/blog/engineering) |
 | LinkedIn | Semantic Job Search | [linkedin.com/blog/engineering](https://linkedin.com/blog/engineering) |
-| Pinterest | VLM assistant, CLIP, LLM labeling | [medium.com/pinterest-engineering](https://medium.com/pinterest-engineering) |
-| Amazon | Rufus (conversational product recs) | [amazon.science](https://amazon.science) |
+| Pinterest | VLM assistant, CLIP, LLM labeling, PinRec | [medium.com/pinterest-engineering](https://medium.com/pinterest-engineering) |
+| Amazon | Rufus (conversational product recs, hydration architecture) | [amazon.science](https://amazon.science) |
 | Amazon | Rufus scaling | [aws.amazon.com/blogs/machine-learning](https://aws.amazon.com/blogs/machine-learning) |
-| DoorDash | Consumer Profiles, query rewriting | [careersatdoordash.com/blog](https://careersatdoordash.com/blog) |
+| DoorDash | Consumer Profiles, query rewriting, H-RAG | [careersatdoordash.com/blog](https://careersatdoordash.com/blog) |
+| DoorDash | LLMs bridging behavioral silos (RecSys 2025) | [careersatdoordash.com/blog](https://careersatdoordash.com/blog/doordash-llms-bridge-behavioral-silos-in-multi-vertical-recommendations/) |
 | Booking.com | AI Trip Planner | [news.booking.com](https://news.booking.com) |
 | Instacart | Head-tail LLM search | [instacart.com/company/tech-innovation](https://instacart.com/company/tech-innovation) |
-| OpenAI | ChatGPT Shopping | [openai.com/index/chatgpt-shopping-research](https://openai.com/index/chatgpt-shopping-research) |
-| Perplexity | Shopping personalization | [perplexity.ai/hub/blog](https://perplexity.ai/hub/blog) |
+| OpenAI | ChatGPT Shopping + Instant Checkout (2026) | [openai.com/index/chatgpt-shopping-research](https://openai.com/index/chatgpt-shopping-research), [openai.com/index/buy-it-in-chatgpt](https://openai.com/index/buy-it-in-chatgpt) |
+| Perplexity | Shopping personalization + Buy with Pro | [perplexity.ai/hub/blog](https://perplexity.ai/hub/blog) |
 | Tolan AI | Voice companion matching | [openai.com/index/tolan](https://openai.com/index/tolan) |
-| Uber Eats | Two-tower, graph learning, food discovery | [uber.com/blog](https://uber.com/blog) |
+| Uber Eats | Two-tower, graph learning, Michelangelo LLMOps | [uber.com/blog](https://uber.com/blog) |
 | Airbnb | Listing embeddings, EBR, interleaving | [medium.com/airbnb-engineering](https://medium.com/airbnb-engineering) |
+| Criteo | Agentic Commerce Recommendation via MCP (Feb 2026) | [criteo.com](https://www.criteo.com/news/press-releases/2026/02/criteo-introduces-agentic-commerce-recommendation-service-to-power-ai-shopping-assistants/) |
+| Kuaishou | OneRec + OpenOneRec (open-source, 2026) | [github.com/Kuaishou-OneRec/OpenOneRec](https://github.com/Kuaishou-OneRec/OpenOneRec) |
+| Tubi | Inference-time feature injection | [arxiv.org/abs/2512.14734](https://arxiv.org/html/2512.14734) |
 
 ### Research Papers
 
@@ -1020,6 +1237,23 @@ For the fine-tuning techniques behind these systems — SFT, DPO, GRPO, distilla
 | Cold-Start Recommendation Survey | 2025 | [arxiv.org/abs/2501.01945](https://arxiv.org/abs/2501.01945) |
 | Can LLMs Outshine Conventional Recommenders? | 2025 | [arxiv.org/abs/2503.05493](https://arxiv.org/abs/2503.05493) |
 | Netflix Artwork Personalization | 2025 | [arxiv.org/abs/2601.02764](https://arxiv.org/abs/2601.02764) |
+| Rec-R1: RL for LLM-Based Recommendations | 2025 | [arxiv.org/abs/2503.24289](https://arxiv.org/html/2503.24289v4) |
+| Agentic Feedback Loop (AFL) for RecSys (SIGIR '25) | 2025 | [arxiv.org/abs/2410.20027](https://arxiv.org/abs/2410.20027) |
+| OneRec: Generative Recommendation (Kuaishou) | 2025 | [arxiv.org/abs/2502.18965](https://arxiv.org/abs/2502.18965) |
+| LLM-Based RecSys Survey (feedback mechanisms) | 2025 | [arxiv.org/abs/2507.21117](https://arxiv.org/html/2507.21117v2) |
+| HELM: Human-Centered LLM RecSys Evaluation (WWW '26) | 2026 | [arxiv.org/abs/2601.19197](https://arxiv.org/abs/2601.19197) |
+| AlignUSER: World-Model LLM Agents for Rec Evaluation | 2026 | [arxiv.org/abs/2601.00930](https://arxiv.org/abs/2601.00930) |
+
+### RL and Feedback Loop Research
+
+| Paper | Key Finding | Link |
+|-------|-------------|------|
+| Rec-R1 | RL framework bridging LLMs with RecSys via black-box reward signals | [arxiv.org/abs/2503.24289](https://arxiv.org/html/2503.24289v4) |
+| Agentic Feedback Loop (SIGIR '25) | Two-agent loop: +11.52% improvement, no popularity bias amplification | [arxiv.org/abs/2410.20027](https://arxiv.org/abs/2410.20027) |
+| ConUCB (WWW 2020) | Contextual bandits with conversational feedback on key-terms | [arxiv.org/abs/1906.01219](https://arxiv.org/abs/1906.01219) |
+| Multi-Armed Bandits Meet LLMs (2025) | Survey on combining bandits with LLMs for adaptive recommendation | [arxiv.org/abs/2505.13355](https://arxiv.org/html/2505.13355v1) |
+| Continual Recommender Systems (2025) | Tutorial on stability-plasticity balance, streaming feedback | [arxiv.org/abs/2507.03861](https://arxiv.org/abs/2507.03861) |
+| Dynamic Feedback Loops in RecSys (2026) | Framework modeling fairness/bias in iterative feedback loops | [Springer JIIS](https://link.springer.com/article/10.1007/s10844-026-01025-y) |
 
 ### LLM Fine-Tuning for Recommendations
 
@@ -1029,10 +1263,14 @@ For the fine-tuning techniques behind these systems — SFT, DPO, GRPO, distilla
 | Process-supervised LLM recommenders (SIGIR '25) | Process supervision improves LLM rec quality | SIGIR 2025 proceedings |
 | Prompting strategies for LLM recs | Systematic comparison of prompting approaches | [arxiv.org/abs/2401.04997](https://arxiv.org/abs/2401.04997) |
 
-### Frameworks
+### Frameworks and Open Source
 
 | Framework | Link |
 |-----------|------|
 | RecBole | [recbole.io](https://recbole.io) |
 | Microsoft RecAI / InteRecAgent | [github.com/microsoft/RecAI](https://github.com/microsoft/RecAI) |
+| OpenOneRec (Kuaishou, 1.7B/8B generative rec models) | [github.com/Kuaishou-OneRec/OpenOneRec](https://github.com/Kuaishou-OneRec/OpenOneRec) |
+| Agentic Commerce Protocol (OpenAI + Stripe) | [github.com/agentic-commerce-protocol](https://github.com/agentic-commerce-protocol/agentic-commerce-protocol) |
 | Eugene Yan's LLM RecSys Guide | [eugeneyan.com/writing/recsys-llm](https://eugeneyan.com/writing/recsys-llm) |
+| Eugene Yan's Bandits for RecSys Guide | [eugeneyan.com/writing/bandits](https://eugeneyan.com/writing/bandits/) |
+| Awesome-LLM-for-RecSys (paper collection) | [github.com/CHIANGEL/Awesome-LLM-for-RecSys](https://github.com/CHIANGEL/Awesome-LLM-for-RecSys) |
