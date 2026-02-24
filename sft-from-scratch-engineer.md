@@ -23,6 +23,10 @@
 13. [What SFT Doesn't Do](#what-sft-doesnt-do)
 14. [Jagged Intelligence: Brilliant and Broken](#jagged-intelligence-brilliant-and-broken)
 15. [SFT in 2025-2026: How the Industry Does It Now](#sft-in-2025-2026-how-the-industry-does-it-now)
+16. [The Cost of SFT: What You'll Actually Pay](#the-cost-of-sft-what-youll-actually-pay)
+17. [What Every Major Lab Did for SFT (2024–2026)](#what-every-major-lab-did-for-sft-2024-2026)
+18. [Industry-Accepted Techniques](#industry-accepted-techniques)
+19. [Domain-Specific SFT in Production](#domain-specific-sft-in-production)
 
 ---
 
@@ -1085,6 +1089,242 @@ The core SFT mechanism is exactly what we built: special tokens, loss masking, n
 
 ---
 
+## The Cost of SFT: What You'll Actually Pay
+
+If you want to fine-tune a 70B+ model, here's what you're signing up for.
+
+### VRAM requirements
+
+The first gate is memory. Full fine-tuning loads model weights, gradients, and optimizer states — roughly 4× the model size in fp16:
+
+| Model | Parameters | Full Fine-Tune VRAM | QLoRA VRAM (4-bit) |
+|---|---|---|---|
+| **Llama 3.1 70B** | 70B | ~280 GB (4×A100 80GB) | ~40 GB (1×A100) |
+| **Llama 3.1 405B** | 405B | ~1.6 TB (20×A100 80GB) | ~220 GB (3×A100) |
+| **DeepSeek-V3/R1** | 671B (37B active) | ~140 GB full MoE / ~80 GB active | ~48 GB (1×A100) |
+
+MoE models like DeepSeek are deceptive — 671B total parameters but only 37B active per token. You still need to load all expert weights, but gradient updates only touch active parameters.
+
+### Cloud GPU pricing (as of early 2026)
+
+| GPU | VRAM | On-Demand ($/hr) | Spot/Reserved ($/hr) | Provider examples |
+|---|---|---|---|---|
+| **A100 80GB** | 80 GB | $1.50–2.50 | $0.80–1.50 | Lambda, RunPod, AWS |
+| **H100 80GB** | 80 GB | $2.50–4.00 | $1.50–2.50 | Lambda, CoreWeave, GCP |
+| **H200 141GB** | 141 GB | $4.00–5.50 | $2.50–3.50 | CoreWeave, Lambda |
+| **8×H100 node** | 640 GB | $20–32 | $12–20 | CoreWeave, AWS p5 |
+
+Prices move fast. The trend is downward — H100 spot prices dropped ~40% from mid-2024 to early 2026.
+
+### Concrete cost breakdowns
+
+**70B model (QLoRA, 10K examples, 3 epochs):**
+- Hardware: 1×A100 80GB for ~8-12 hours → **$12–30**
+- This is the sweet spot for most teams. You get meaningful behavior changes for the cost of a nice lunch.
+
+**70B model (full fine-tune, 50K examples, 3 epochs):**
+- Hardware: 4×A100 80GB for ~24-48 hours → **$150–400**
+- Needed when you want deeper adaptation — domain-specific vocabulary, significant style changes, or new capabilities.
+
+**405B model (QLoRA, 10K examples, 2 epochs):**
+- Hardware: 3×A100 80GB for ~24-36 hours → **$90–250**
+- Or use an 8×H100 node for ~8-12 hours → **$160–380**
+- Faster with more GPUs, but not always cheaper. Communication overhead means scaling isn't linear.
+
+**671B MoE (DeepSeek-V3/R1, QLoRA on active params):**
+- Hardware: 4×A100 80GB for ~16-24 hours → **$80–200**
+- MoE is surprisingly affordable to fine-tune since you're only updating active parameters.
+
+### API-based fine-tuning
+
+If you don't want to manage GPUs:
+
+| Provider | Model | Cost | What you get |
+|---|---|---|---|
+| **OpenAI** | GPT-4o fine-tuning | ~$25/1M training tokens | Managed, no infra work. Limited control. |
+| **Together AI** | Llama 70B | ~$5/1M tokens | Open model, more control, good tooling. |
+| **Fireworks** | Any supported model | ~$3–8/1M tokens | Fast iteration, good API. |
+| **Anyscale** | Llama/Mistral variants | Custom pricing | Ray-based, good for scale. |
+
+For 10K examples (~5M tokens), API fine-tuning costs roughly **$15–125** depending on provider and model. The trade-off: less control over hyperparameters, no access to intermediate checkpoints, and you're locked to their serving infrastructure.
+
+### Production all-in cost
+
+The GPU hours are just part of the story. Here's what a realistic production SFT project costs:
+
+| Component | 70B QLoRA | 70B Full | 405B QLoRA |
+|---|---|---|---|
+| Data collection/labeling | $500–5,000 | $500–5,000 | $500–5,000 |
+| Compute (experimentation) | $50–200 | $300–1,500 | $300–1,000 |
+| Compute (final training) | $15–30 | $150–400 | $100–250 |
+| Evaluation & iteration | $100–500 | $200–1,000 | $200–800 |
+| Serving infrastructure (monthly) | $500–2,000 | $500–2,000 | $1,500–5,000 |
+| **Total to launch** | **$1,200–8,000** | **$1,700–10,000** | **$2,600–12,000** |
+
+The unsexy truth: data labeling dominates costs for most teams. The compute for training is often the cheapest part.
+
+### What to expect at each price point
+
+- **$50–100** (weekend project): QLoRA on 70B with a public dataset. Good for learning, proofs of concept. Expect noticeable style/format changes but don't expect to beat GPT-4.
+- **$500–2,000** (startup MVP): QLoRA on 70B with 5–10K curated examples. Competitive with general-purpose APIs on your specific domain. This is where most production SFT actually happens.
+- **$5,000–15,000** (serious production): Full fine-tune or multi-stage SFT on 70B+ with custom data pipeline. You're building a moat — the model knows your domain better than any general-purpose model.
+- **$50,000+** (frontier lab): Multi-stage SFT + RL on 405B+ with massive synthetic data pipelines. This is what Meta, DeepSeek, and others spend on post-training. You probably don't need this unless you're building a foundation model.
+
+---
+
+## What Every Major Lab Did for SFT (2024–2026)
+
+The labs don't all do SFT the same way. Here's what each actually shipped:
+
+| Lab | Model | SFT Data Size | Technique | Key Detail | Reference |
+|---|---|---|---|---|---|
+| **Meta** | Llama 3/3.1 | ~28K examples (after filtering from millions) | Lightweight SFT → Online RL → DPO | Model-as-judge rejects >50% of generated data. Quality over quantity. | [Llama 3 paper](https://arxiv.org/abs/2407.21783) |
+| **DeepSeek** | DeepSeek-V3, R1 | ~800K (R1 distillation), 1.5M (V3) | Distillation + cold-start SFT → RL | R1-Zero learns reasoning via pure RL; R1 uses distilled reasoning traces as SFT seed data. | [DeepSeek-R1](https://arxiv.org/abs/2501.12948), [V3 report](https://arxiv.org/abs/2412.19437) |
+| **Alibaba** | Qwen 2.5 | ~1M examples | Multi-stage SFT with curriculum | Progressive difficulty: simple → complex. Heavy use of synthetic math/code data. | [Qwen 2.5 report](https://arxiv.org/abs/2412.15115) |
+| **Microsoft** | Phi-3/3.5, Orca | 100K–1M+ synthetic | Synthetic data from stronger models | Phi-3 uses filtered web data + synthetic textbooks. Orca pioneered explanation-tuning. | [Phi-3 report](https://arxiv.org/abs/2404.14219) |
+| **NVIDIA** | Nemotron-4 340B | 18M+ synthetic examples | Massive synthetic pipeline | 98% synthetic SFT data. HelpSteer2 preference data. Model generates, scores, and filters its own training data. | [Nemotron-4 report](https://arxiv.org/abs/2406.11704) |
+| **Google** | Gemma 2, Gemini | Undisclosed | Distillation + SFT + RLHF | Gemma 2 27B distilled from larger Gemini models. Knowledge distillation during both pre-training and post-training. | [Gemma 2 report](https://arxiv.org/abs/2408.00118) |
+| **Anthropic** | Claude 3/3.5 | Undisclosed | Constitutional AI + RLHF | Model self-critiques against a constitution. Humans write principles, not individual examples. | [Constitutional AI paper](https://arxiv.org/abs/2212.08073) |
+| **Apple** | Apple Intelligence models | ~17K (OpenELM) | Adapter-based SFT | On-device models use adapters per task. Small, targeted SFT for specific capabilities. | [OpenELM paper](https://arxiv.org/abs/2404.14619) |
+| **Cohere** | Command R+ | ~10K curated | Tool-use-focused SFT | SFT data emphasizes multi-step tool use, RAG grounding, and citation generation. | [Command R+ blog](https://cohere.com/blog/command-r-plus-microsoft-azure) |
+| **Mistral** | Mistral Large, Mixtral | Undisclosed | Instruction tuning + DPO | Sparse MoE architecture. Community-fine-tuned variants often outperform official instruct models. | [Mixtral paper](https://arxiv.org/abs/2401.04088) |
+
+### Patterns across labs
+
+A few things stand out:
+
+1. **Everyone filters aggressively.** Meta went from millions of candidates to 28K. NVIDIA generated 18M and still filtered. The generation-to-selection ratio is typically 10:1 or higher.
+2. **SFT is shrinking, RL is growing.** The trend from 2024–2026 is unmistakable: less SFT data, more RL. DeepSeek-R1 showed you can get emergent reasoning from pure RL (R1-Zero), then use SFT only to stabilize the output format.
+3. **Distillation is the dominant strategy for smaller models.** Gemma 2, DeepSeek-R1 distilled variants, Phi-3 — the best small models are taught by larger ones.
+4. **No one does SFT alone anymore.** Every lab uses SFT as one stage in a multi-stage pipeline: SFT → RL → DPO/KTO or some variation.
+
+---
+
+## Industry-Accepted Techniques
+
+Here's the quick mental model before we go deep: **LoRA/QLoRA** freeze most weights and train tiny adapter matrices, slashing VRAM. **Lightweight SFT + heavy RL** uses a small SFT phase to teach format, then spends most compute on reinforcement learning to refine quality. **Synthetic data + filtering** generates examples at scale from a strong model, then rejects 50–90% with a judge. **Multi-stage SFT** trains in phases — broad first, specialized second, safety last — so the model builds skills incrementally. **Constitutional AI** replaces per-example human labels with a set of principles the model uses to self-critique and revise. **Distillation** trains a smaller model to mimic a larger one's outputs or reasoning. Each technique solves a different bottleneck — memory, data, quality, alignment, or cost — and in practice you combine several of them.
+
+### LoRA and QLoRA
+
+The most widely adopted technique for production SFT. Instead of updating all model weights, LoRA adds small trainable matrices (rank 16–128) to attention layers:
+
+- **LoRA**: Adds ~0.1–1% trainable parameters. Saves memory, enables fast swapping between fine-tuned variants.
+- **QLoRA**: Quantizes the base model to 4-bit, then applies LoRA on top. Cuts VRAM by ~75% with minimal quality loss.
+
+When to use full fine-tuning instead: when you need deep domain adaptation (new languages, highly specialized domains), when you have enough compute, or when LoRA quality plateaus and you've verified the gap experimentally.
+
+### Lightweight SFT + heavy RL
+
+Meta's Llama 3 recipe, now adopted widely:
+
+1. **Short SFT phase**: Small, high-quality dataset (~10K–50K examples) to teach format and basic behavior
+2. **Rejection sampling**: Generate multiple responses, score with a reward model, keep the best
+3. **DPO/Online RL**: Train on preference pairs to refine quality beyond what SFT can achieve
+
+This works because SFT teaches *what* to do, but RL teaches *how well* to do it. The combination outperforms either alone.
+
+### Synthetic data + filtering
+
+The standard pipeline for generating training data at scale:
+
+1. **Generate**: Use a strong model (GPT-4, Claude, or your own best checkpoint) to create examples
+2. **Filter**: Score with a reward model, LLM-as-judge, or rule-based checks. Reject 50–90% of generated data.
+3. **Deduplicate**: Remove near-duplicates using embedding similarity or n-gram overlap
+4. **Validate**: Human spot-check a sample to verify quality
+
+NVIDIA's Nemotron pipeline generates 18M+ examples this way. The key insight: generating data is cheap; the filtering pipeline is what matters.
+
+### Multi-stage SFT
+
+Rather than training on all data at once, stage the training:
+
+| Stage | Focus | Data | Epochs |
+|---|---|---|---|
+| 1 | General instruction following | Broad, diverse dataset | 2–3 |
+| 2 | Domain specialization | Domain-specific examples | 1–2 |
+| 3 | Safety and formatting | Alignment data, refusals | 0.5–1 |
+
+Alibaba's Qwen uses a curriculum that progresses from simple to complex. This prevents the model from being overwhelmed early and helps it build capabilities incrementally.
+
+### Constitutional AI
+
+Anthropic's approach to alignment without per-example human labels:
+
+1. Write a set of principles (the "constitution")
+2. Generate responses, then ask the model to critique them against the principles
+3. Model revises its own responses based on self-critique
+4. Train on the revised responses
+
+This scales better than human labeling — you write principles once, and the model generates unlimited self-critiqued training data.
+
+### Distillation
+
+Training a smaller model to mimic a larger one:
+
+- **Response distillation**: Smaller model learns from larger model's outputs (most common for SFT)
+- **Reasoning trace distillation**: Smaller model learns the *thinking process*, not just final answers (DeepSeek-R1's approach)
+- **Logit distillation**: Match the probability distributions, not just the top-1 token (requires white-box access)
+
+DeepSeek's Qwen-32B distilled from R1-671B outperforms many models trained from scratch at much larger scale. Distillation is the reason small open models got so good in 2024–2025.
+
+### Frameworks and tools
+
+| Framework | Best for | Key feature |
+|---|---|---|
+| **Hugging Face TRL** | Quick experiments, LoRA | SFTTrainer with built-in chat template support |
+| **Axolotl** | Production LoRA/QLoRA | YAML config, multi-dataset mixing, flash attention |
+| **LLaMA-Factory** | Broad model support | 100+ models, web UI, integrated evaluation |
+| **torchtune** | PyTorch-native training | Meta's official library, clean codebase |
+| **DeepSpeed** | Large-scale distributed | ZeRO stages, pipeline parallelism |
+| **FSDP (PyTorch)** | Multi-GPU full fine-tune | Shards model across GPUs, native PyTorch |
+
+### The cost-saving stack
+
+If you're optimizing for cost, this is the 2025–2026 meta:
+
+1. **Start with QLoRA** on the largest model you can serve in production
+2. **Use synthetic data** from a stronger model, filtered aggressively
+3. **Train for 1–3 epochs** — more epochs rarely help and often hurt
+4. **Evaluate early and often** — don't waste compute on a bad data recipe
+5. **Graduate to full fine-tune** only if QLoRA quality plateaus and you've measured the gap
+
+---
+
+## Domain-Specific SFT in Production
+
+General-purpose SFT teaches a model to be a good assistant. Domain-specific SFT teaches it to be a good *specialist*. Here's what's actually working in production:
+
+### Medical
+
+- **BioMistral** ([Labrak et al. 2024](https://arxiv.org/abs/2402.10373)): Mistral 7B fine-tuned on PubMed Central. Outperforms general models on medical QA benchmarks while retaining general capabilities.
+- **Med-PaLM 2** ([Singhal et al. 2023](https://arxiv.org/abs/2305.09617)): Google's medical model. Reached expert-level performance on USMLE-style questions through domain-specific SFT + ensemble refinement.
+- **Key lesson**: Medical SFT requires extreme caution with hallucination. Most production deployments use retrieval-augmented generation (RAG) alongside SFT, not SFT alone.
+
+### Legal
+
+- **SaulLM** ([Colombo et al. 2024](https://arxiv.org/abs/2403.03883)): 7B model with continued pre-training on 30B legal tokens, then SFT on legal instruction data. Legal domain benefits from continued pre-training before SFT because the vocabulary and reasoning patterns are so different from general text.
+- **Key lesson**: Legal models need continued pre-training (not just SFT) because legal language is structurally different. SFT alone on a general model underperforms.
+
+### Code
+
+- **DeepSeek-Coder V2** ([Zhu et al. 2024](https://arxiv.org/abs/2406.11931)): MoE architecture, 236B total / 21B active. Trained on 6T tokens of code, then SFT on instruction-code pairs. Competitive with GPT-4 Turbo on coding benchmarks.
+- **CodeLlama** ([Rozière et al. 2024](https://arxiv.org/abs/2308.12950)): Meta's code-specialized Llama. Uses infilling objectives during continued pre-training, then instruction SFT.
+- **Key lesson**: Code models benefit most from continued pre-training on code, followed by relatively lightweight instruction SFT. The pre-training data matters more than the SFT data for code quality.
+
+### Finance
+
+- **FinGPT** ([Yang et al. 2023](https://arxiv.org/abs/2306.06031)): Open framework for financial LLMs. Uses LoRA for rapid adaptation to market data. Key insight: financial data is temporal — models need frequent re-tuning as market conditions change.
+- **Key lesson**: Finance SFT needs continuous retraining. A model fine-tuned on 2023 market data gives bad advice in 2025. Build your pipeline for repeated fine-tuning, not one-shot.
+
+### Recommendations for domain SFT
+
+1. **Continued pre-training first** if your domain has specialized vocabulary (legal, medical, scientific). SFT alone can't teach a model words it's never seen.
+2. **Curate domain-expert data** — synthetic data from GPT-4 about medicine is not the same as data labeled by doctors. For high-stakes domains, invest in expert annotation.
+3. **Evaluate on domain benchmarks**, not just general ones. A model can ace MMLU while failing at your specific use case.
+4. **Combine SFT with RAG** for factual domains. SFT teaches the model *how* to reason about your domain; RAG provides the *current facts*.
+
+---
+
 **References and further reading:**
 - [Training language models to follow instructions with human feedback](https://arxiv.org/abs/2203.02155) (InstructGPT, Ouyang et al. 2022) — the paper that defined the SFT → RM → RLHF pipeline
 - [The Llama 3 Herd of Models](https://arxiv.org/abs/2407.21783) (Meta 2024) — post-training details including knowledge-probing for refusal training and SFT data pruning
@@ -1096,5 +1336,17 @@ The core SFT mechanism is exactly what we built: special tokens, loss masking, n
 - [Vicuna: An Open-Source Chatbot](https://lmsys.org/blog/2023-03-30-vicuna/) (LMSYS 2023) — SFT on ShareGPT conversations
 - [OpenAssistant Conversations (OASST)](https://huggingface.co/datasets/OpenAssistant/oasst1) — open conversation dataset
 - [Supervised Fine-Tuning from Scratch](https://liyuan24.github.io/writings/supervised_fine_tuning.html) (Li Yuan) — another implementation walkthrough using chatML and ultrachat_200k
+- [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437) (DeepSeek 2024) — MoE architecture and post-training pipeline
+- [Qwen 2.5 Technical Report](https://arxiv.org/abs/2412.15115) (Alibaba 2024) — multi-stage SFT with curriculum learning
+- [Phi-3 Technical Report](https://arxiv.org/abs/2404.14219) (Microsoft 2024) — synthetic data and small model training
+- [Gemma 2 Report](https://arxiv.org/abs/2408.00118) (Google 2024) — knowledge distillation during post-training
+- [OpenELM](https://arxiv.org/abs/2404.14619) (Apple 2024) — efficient on-device language models
+- [Mixtral of Experts](https://arxiv.org/abs/2401.04088) (Mistral 2024) — sparse mixture-of-experts instruction tuning
+- [BioMistral](https://arxiv.org/abs/2402.10373) (Labrak et al. 2024) — medical domain fine-tuning on PubMed
+- [Towards Expert-Level Medical Question Answering with Large Language Models](https://arxiv.org/abs/2305.09617) (Med-PaLM 2, Singhal et al. 2023)
+- [SaulLM-7B: A pioneering Large Language Model for Law](https://arxiv.org/abs/2403.03883) (Colombo et al. 2024)
+- [DeepSeek-Coder-V2](https://arxiv.org/abs/2406.11931) (DeepSeek 2024) — MoE code model
+- [Code Llama: Open Foundation Models for Code](https://arxiv.org/abs/2308.12950) (Rozière et al. 2024)
+- [FinGPT: Open-Source Financial Large Language Models](https://arxiv.org/abs/2306.06031) (Yang et al. 2023)
 
 *This is part of a series where I build every stage of the LLM training pipeline from scratch. [Previous: Building a Language Model from Scratch](building-gpt-from-scratch.md).*
