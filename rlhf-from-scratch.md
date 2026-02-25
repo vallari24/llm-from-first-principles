@@ -535,29 +535,79 @@ AFTER HUNDREDS OF EPISODES:
   The policy learned — without ever computing Q.
 ```
 
-**The formula.** The policy gradient update has one equation:
+**The loss function.** The policy gradient loss looks like cross-entropy from SFT, but with one extra term — the reward:
 
 ```
-∇J(θ) = E[ R * ∇log π(a|s) ]
+SFT loss:              -log P(a|s)         "make this action more likely"
+Policy gradient loss:  -log P(a|s) * R     "make this action more likely,
+                                            SCALED by how good it was"
 ```
 
-Each piece has a plain meaning:
+Why `-log P`? You've seen this before. It measures how *surprised* the model is by the action. High probability → small `-log P`. Low probability → big `-log P`.
 
 ```
-R              = how good was this episode? (total return)
-log π(a|s)     = how likely was the action I took?
-∇log π(a|s)    = direction to push weights to make that action MORE likely
-R * ∇log π(a|s)= scale by how good it went
+P(action) = 0.9  →  -log(0.9) = 0.1   ← "expected this"
+P(action) = 0.1  →  -log(0.1) = 2.3   ← "surprised"
+P(action) = 0.01 →  -log(0.01) = 4.6  ← "shocked"
 ```
 
-The multiplication does all the work:
+Multiplying by R turns this into a signal that depends on the outcome:
 
 ```
-Good episode (R = +5):    push HARD → make these actions more likely
-Meh episode  (R = +0.1):  push a little → barely change anything
-Bad episode  (R = -3):    negative R FLIPS the gradient
-                          → makes these actions LESS likely
+R > 0 (good):  loss is positive → gradient descent minimizes it
+               → INCREASES P(action). "Do this more."
+
+R = 0 (meh):   loss is zero → no gradient, no update.
+               "Learned nothing."
+
+R < 0 (bad):   loss is NEGATIVE → sign flips during backprop
+               → DECREASES P(action). "Stop doing this."
+
+|R| big:       large loss → big gradient → big update
+|R| small:     small loss → small gradient → tiny update
 ```
+
+**The four cases.** The most learning happens when the model is surprised by a good outcome:
+
+```
+Case 1: High reward + high P  ("I was right and I knew it")
+  P=0.9, R=+5  →  loss = 0.1 * 5 = 0.5
+  Small update. Already doing the right thing.
+
+Case 2: High reward + low P  ("This worked?! I should do this more!")
+  P=0.1, R=+5  →  loss = 2.3 * 5 = 11.5
+  BIG update. Surprised by success → learn a lot.
+
+Case 3: Negative reward + high P  ("I was confidently wrong")
+  P=0.9, R=-3  →  loss = 0.1 * (-3) = -0.3
+  Sign flips → decrease P. "Stop doing this."
+
+Case 4: Negative reward + low P  ("Bad, but I barely do it anyway")
+  P=0.1, R=-3  →  loss = 2.3 * (-3) = -6.9
+  Sign flips, but model already avoids this action.
+```
+
+```
+                    High P (confident)    Low P (surprised)
+                    ──────────────────    ─────────────────
+High reward (+):    small update          BIG update ← most learning
+                    "already doing it"    "should do this MORE"
+
+Low reward (-):     sign flips            sign flips
+                    "stop doing this"     "already avoid it"
+```
+
+The gradient descent update spells it out:
+
+```
+Standard:   w' = w - ∇(loss)
+Plug in:    w' = w - ∇(-log P * R)
+Simplify:   w' = w + ∇(log P) * R
+                     ^^^^^^^^^^^^^
+                   "policy gradient"
+```
+
+That's where the name comes from. The **policy gradient** is ∇log P(a|s) * R — the gradient of the log-probability, scaled by the reward. The reward acts as a volume knob on the learning signal.
 
 Visualize the policy parameters as a position on a landscape. Expected reward is the height. Policy gradient computes the slope and walks uphill:
 
