@@ -779,6 +779,193 @@ One key difference from typical RL: the reward comes at the **end**, not at ever
 
 ---
 
+## When to Reach for RL
+
+The intuition is simple: **use RL when you can't write down the right answer, but you can recognize it.**
+
+```
+Supervised learning:  "Here's the input, here's the CORRECT output. Copy it."
+                      You need labeled data. Someone writes the answer.
+
+RL:                   "Here's the input. Try something. I'll score your attempt."
+                      You need a scoring function. No one writes the answer.
+```
+
+For most tasks, supervised learning works fine — translation, classification, summarization all have "correct" outputs you can train on. But some tasks don't have a single correct answer:
+
+```
+"Write a helpful response to this user question"
+  → 1000 good responses and 1000 bad ones exist.
+  → You can't enumerate them all as training data.
+  → But you CAN score them: "this one is better than that one."
+  → That's where RL comes in.
+```
+
+**Why apply RL *after* training an LLM?** SFT trains the model to *imitate*. It copies the format and style of training examples. But imitation has a ceiling — the model can only be as good as its training data. RL lets the model *explore and improve beyond its training data*:
+
+```
+SFT model:   "I produce responses that look like my training data"
+RLHF model:  "I produce responses that humans actually prefer"
+RL model:    "I discover solutions my training data never contained"
+```
+
+This is the superpower supervised learning doesn't have. SFT can only learn moves that humans played. RL can discover moves **humans never thought of**.
+
+The most famous example: **AlphaGo's Move 37.** In the 2016 match against world champion Lee Sedol, AlphaGo played a move on turn 37 that stunned every Go expert watching. No human had ever played that move in that position. The commentators thought it was a mistake. It won the game.
+
+```
+Supervised learning (imitation):
+  Trained on millions of human Go games.
+  Can only play moves humans have played before.
+  Ceiling = the best human player.
+
+RL (self-play):
+  Plays against itself millions of times.
+  Discovers strategies no human ever tried.
+  Move 37 — experts called it "beautiful" and "alien."
+  Ceiling = limited only by compute and the reward signal.
+```
+
+AlphaGo was first trained with supervised learning on human games (like SFT), then improved with RL self-play (like RLHF). The SFT phase taught it "how humans play Go." The RL phase taught it "how to play Go *better than any human*." The same pattern applies to LLMs.
+
+The full AlphaGo pipeline also reveals an important concept — the **value network**. AlphaGo actually has two networks:
+
+```
+AlphaGo's Full Pipeline:
+
+  Human games → SL Policy Network → RL Policy Network → Value Network
+                 (classification)     (self-play)         (regression)
+                 "what move to play"  "play better"       "am I winning?"
+```
+
+The **policy network** asks: "What move should I make?" It outputs probabilities over all possible moves.
+
+The **value network** asks: "Am I winning or losing right now?" It looks at a board position and outputs a single number between -1 and +1. That's it — just one number.
+
+```
+Policy network:  board → P(top-right)=0.23, P(center)=0.15, ...
+                 "Here's what to do."
+
+Value network:   board → +0.7
+                 "You're probably winning from here."
+```
+
+Why do you need both? Because the policy tells you what to do, but the value tells you *how you're doing*. Without it, AlphaGo would have to play out every possible move to the end of the game (hundreds of moves) to see which one wins. With the value network, it plays move A, checks the resulting board — "+0.8, looking good" — plays move B, checks — "+0.3, not great" — picks A. Two evaluations instead of hundreds.
+
+It's like chess intuition. A grandmaster glances at a board and *feels* "white is winning." They don't calculate every future — they have a learned sense of "good position" vs "bad position." The value network IS that intuition, learned from millions of self-play games.
+
+```
+This maps directly to LLMs:
+
+AlphaGo                           LLMs
+────────                          ────
+SL policy network                 SFT model (imitate human data)
+RL policy network                 RLHF model (improve via reward)
+Value network                     Reward model
+  "Is this board position good?"    "Is this response good?"
+  → single score: +0.7             → single score: +0.7
+```
+
+The reward model in RLHF is conceptually similar — it looks at a response and outputs a scalar score. We'll build one in the next post.
+
+This is how RL improves "thinking capacity." Models like o1 and DeepSeek-R1 use RL to learn *reasoning strategies* — not from labeled examples of reasoning, but by discovering that thinking step-by-step leads to higher rewards:
+
+```
+SFT model:  "What's 347 * 28?"  →  "9,716"  (immediate answer, sometimes wrong)
+
+RL model:   "What's 347 * 28?"  →  "Let me think...
+                                    347 * 28
+                                    = 347 * 30 - 347 * 2
+                                    = 10,410 - 694
+                                    = 9,716" ✓
+
+Nobody told it to reason step by step.
+It DISCOVERED this strategy because it consistently led to correct answers.
+RL found a strategy that wasn't in the training data.
+```
+
+**RL applications beyond LLMs** — the pattern is always the same:
+
+```
+┌───────────────────────┬──────────────────────────────────────┐
+│ Application           │ Why RL, not supervised learning?      │
+├───────────────────────┼──────────────────────────────────────┤
+│ Game playing          │ No dataset of "correct moves."       │
+│ (Chess, Go, Atari)    │ Play, win or lose, learn.            │
+│                       │                                      │
+│ Robotics              │ Can't label every movement.          │
+│                       │ Robot tries, falls, learns balance.  │
+│                       │                                      │
+│ RLHF for LLMs        │ Can't write every "perfect" response.│
+│                       │ Generate, humans score, learn.       │
+│                       │                                      │
+│ Code generation       │ Can't enumerate correct programs.    │
+│ (AlphaCode)           │ Generate code, run tests, learn.     │
+│                       │                                      │
+│ Math reasoning        │ Can't label every proof step.        │
+│ (AlphaProof)          │ Attempt proofs, verify, learn.       │
+│                       │                                      │
+│ Chip design           │ Can't label optimal layouts.         │
+│ (Google TPU layout)   │ Try layouts, simulate, learn.        │
+│                       │                                      │
+│ Autonomous driving    │ Can't label every steering decision. │
+│                       │ Drive, stay on road = reward, learn. │
+└───────────────────────┴──────────────────────────────────────┘
+```
+
+---
+
+## What Can Go Wrong: The Risks of RL
+
+RL is powerful but dangerous. Here's what can break:
+
+**Reward hacking.** The model finds shortcuts that score high on the reward function but aren't actually good. Like a student who games the rubric instead of learning the material.
+
+```
+Intended:  "Write helpful, detailed responses"  →  model writes great answers
+Reality:   Model discovers that long responses score higher
+           →  starts padding every answer with filler to hit length
+           →  reward goes up, actual quality goes down
+```
+
+**Mode collapse.** The model finds ONE type of response that scores well and *only* generates that. It loses diversity entirely.
+
+```
+Before RL:  diverse poems — different styles, topics, structures
+After RL:   every poem starts with "The sun..." because that pattern
+            scored well a few times and the model over-exploited it
+```
+
+**Catastrophic forgetting.** RL pushes the model so far from its SFT starting point that it forgets how to write coherent text. Outputs become gibberish that somehow scores high on the reward model.
+
+```
+SFT model:    "The ocean reflects the pale moonlight."   (coherent, decent)
+After too     "Thee most wonderful fantastical ocean
+much RL:       moonlight beauty!!! The best!!!"          (scores high, reads badly)
+```
+
+**Training instability.** RL is notoriously finicky. Learning rate too high → model collapses. Too low → no improvement. Hyperparameters require careful tuning.
+
+The fix for most of these: a **KL penalty** — a leash that keeps the RL model close to the SFT model. "Improve, but don't stray too far from where you started."
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  PROS                        │  CONS                        │
+├──────────────────────────────┼──────────────────────────────┤
+│  Goes beyond training data   │  Reward hacking              │
+│  Optimizes what you care     │  Mode collapse               │
+│    about (reward)            │  Catastrophic forgetting     │
+│  Handles tasks with no       │  Training instability        │
+│    single correct answer     │  Expensive (generate +       │
+│  Can learn reasoning,        │    score + gradient)         │
+│    planning, self-correction │  Hyperparameter tuning       │
+└──────────────────────────────┴──────────────────────────────┘
+```
+
+> **Key insight:** RL is the right tool when you can score but can't demonstrate. If you can write down the correct answer, use supervised learning — it's simpler and more stable. If you can only say "this attempt is better than that attempt," you need RL. The power comes with real risks — reward hacking, mode collapse, instability — which is why RLHF wraps RL in safety rails like the KL penalty.
+
+---
+
 ## Summary: RL Concepts You Need for RLHF
 
 ```
