@@ -332,6 +332,97 @@ This is why RLHF uses **PPO** (a policy learning algorithm). PPO takes the exist
 
 > **Key insight:** Value learning and policy learning solve the same problem via different strategies. Value learning asks "how good is each option?" and picks the best. Policy learning asks "what should I do?" directly. Language models are natural policies — they already output action probabilities — which is why RLHF uses policy learning (PPO) rather than value learning (Q-learning).
 
+### Scaling Q to Neural Networks: Deep Q-Networks (DQN)
+
+For a 4x4 maze, the Q-table has 16 rows and 4 columns — 64 numbers. Easy. But what about Atari, where the state is a game screen with 210x160 pixels in color? That's millions of possible states. A table can't hold that.
+
+The fix: replace the table with a **neural network**. Feed in the game screen, get Q-values for every action out.
+
+```
+┌───────────┐         ┌────────────┐      Q(s, up)    = 0.2
+│ game      │         │            │      Q(s, down)  = 0.4
+│ screen    │ ──────▶ │  Deep NN   │ ──▶  Q(s, left)  = 0.1
+│ (pixels)  │         │            │      Q(s, right) = 0.73  ★
+└───────────┘         └────────────┘
+   state s             the agent         one forward pass → all Q-values
+```
+
+One forward pass gives you Q-values for every action at once. Pick the max. This is **DQN** — Deep Q-Network — what DeepMind used to play Atari at superhuman level.
+
+But how do you *train* this network? What's the loss function? This is where the Bellman target becomes a training signal.
+
+### The Bellman Target: How Q Actually Learns
+
+The Bellman equation isn't just a formula — it's a **training target**. It tells the network what the Q-value *should* be, so you can compute a loss and backpropagate.
+
+The intuition: **you only ever look one step ahead.**
+
+Say the agent is at position A, goes right, lands at B, and got reward -0.01 for that step. Now it's standing at B. From past experience, the network already estimates that the best Q-value from B is about +0.90.
+
+```
+What I actually got (immediate reward):   -0.01   ← I KNOW this, it just happened
+What I expect from here (best Q at B):    +0.90   ← I ALREADY ESTIMATED this
+                                          ─────
+Bellman target:                           +0.89
+
+This is what Q(A, right) SHOULD be.
+```
+
+That's it. The Bellman target = immediate reward + discounted best-Q of the next state. No predicting the distant future. Just one step ahead, trusting your existing estimates for the rest.
+
+Think of it like a road trip. You don't need to know the entire route to evaluate a highway choice:
+
+```
+Highway A:                              Highway B:
+  First segment: 2hrs bad road            First segment: 1hr good road
+  Best estimate from junction: 3hrs       Best estimate from junction: 6hrs
+  Total: 5hrs  ★                          Total: 7hrs
+
+You only need: (1) how bad is the NEXT segment?
+               (2) what's my best estimate FROM THERE?
+```
+
+### The Training Loop: Turning Bellman Into a Loss Function
+
+Now it's just supervised learning. The network predicts a Q-value, the Bellman equation gives you the target, and the loss is the squared difference.
+
+```
+Training step:
+
+1. Agent plays, records experience:
+   (state=A, action=right, reward=-0.01, next_state=B)
+
+2. Network predicts:
+   Q(A, right) = 0.50                   ← current prediction
+
+3. Compute Bellman target:
+   target = r + γ * max_a' Q(B, a')
+         = -0.01 + 0.99 * 0.90
+         = 0.88                          ← what it SHOULD be
+
+4. Loss = (prediction - target)²
+        = (0.50 - 0.88)²
+        = 0.14                           ← how wrong we are
+
+5. Backprop → nudge network weights so Q(A, right) moves toward 0.88
+
+6. Repeat thousands of times.
+```
+
+The beautiful thing: this is **bootstrapping**. The target itself uses Q estimates. Early on, those estimates are garbage — so the targets are garbage. But each update makes them slightly better. And the improvements ripple backward from states where you *know* the answer:
+
+```
+Episode 1:    Cell next to goal learns    → "Q ≈ 1.0, goal is right here"
+Episode 10:   2 steps away improves       → "next cell is ~1.0, so I'm ~0.99"
+Episode 50:   5 steps away improves       → "cell ahead is ~0.97, so I'm ~0.96"
+Episode 200:  Entire maze is calibrated   → every cell has a good Q-value
+
+Each cell only looks ONE step ahead.
+The chain of one-step lookups covers the whole maze.
+```
+
+> **Key insight:** The Bellman target turns RL into supervised learning. You don't need to know the future — you only look one step ahead and trust your own (improving) estimates for the rest. The loss is just (prediction - target)². Train long enough, and the one-step estimates chain together to cover the entire problem. This is why RL works — it decomposes an impossible problem (predict total future reward) into a simple one (predict one step ahead, repeatedly).
+
 ---
 
 ## Mapping RL to Language Models
