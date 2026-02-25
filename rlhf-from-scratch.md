@@ -1,6 +1,6 @@
-# RLHF From Scratch: Teaching a Language Model What "Good" Means
+# RL Fundamentals: The Building Blocks Behind RLHF
 
-*SFT taught the model to follow instructions. RLHF teaches it which responses are actually better.*
+*Before you can understand how RLHF teaches a language model what "good" means, you need to understand reinforcement learning.*
 
 ---
 
@@ -10,7 +10,7 @@
 2. [RL Fundamentals: The Agent-Environment Loop](#rl-fundamentals-the-agent-environment-loop)
 3. [Mapping RL to Language Models](#mapping-rl-to-language-models)
 
-*This post grows iteratively. More sections (reward model, PPO, reward hacking, DPO) coming soon.*
+*This post covers RL fundamentals — the foundation you need before understanding RLHF. Future posts will cover the reward model, PPO, reward hacking, and DPO.*
 
 ---
 
@@ -423,6 +423,275 @@ The chain of one-step lookups covers the whole maze.
 
 > **Key insight:** The Bellman target turns RL into supervised learning. You don't need to know the future — you only look one step ahead and trust your own (improving) estimates for the rest. The loss is just (prediction - target)². Train long enough, and the one-step estimates chain together to cover the entire problem. This is why RL works — it decomposes an impossible problem (predict total future reward) into a simple one (predict one step ahead, repeatedly).
 
+### Why Q-Learning Breaks Down (and Why Policy Learning Wins for LLMs)
+
+Q-learning works great for mazes and Atari. But it has three fundamental limitations that make it a poor fit for harder problems — and especially for language models.
+
+**Limitation 1: Must score every action.** Q-learning ends with `argmax` — pick the highest-scoring action. That means you need to compute Q for *every* possible action. In a maze, that's 4 actions. In a vocabulary of 50,000 tokens, that's 50,000 scores per step. Possible, but expensive. For a robot arm with continuous joint angles — how many degrees to turn? 23.5°? 23.51°? — there are *infinite* possible actions. You can't argmax over infinity.
+
+```
+Maze:        4 actions   → score all 4, pick max. Easy.
+Atari:       18 actions  → score all 18, pick max. Fine.
+Robot arm:   ∞ actions   → score them all? Impossible.
+LLM:         50k tokens  → score all 50k every step? Expensive.
+```
+
+Policy learning doesn't have this problem. It outputs probabilities directly — no need to enumerate and score everything. For continuous actions, it outputs distribution parameters (mean=23.5°, std=2°) and samples.
+
+**Limitation 2: Deterministic — same state, same answer, every time.** Q-learning uses `argmax`: same state → same highest Q-value → same action. Always. No randomness. Why is that bad?
+
+Think about Rock-Paper-Scissors. If you always play Rock (deterministic), your opponent plays Paper every time. You lose. The *optimal* strategy is random: 33% each. No deterministic policy can win.
+
+```
+Deterministic:   "playing RPS" → always Rock → opponent plays Paper → lose
+Stochastic:      "playing RPS" → 33/33/33    → opponent can't exploit you
+```
+
+For language models, deterministic = "write a poem about the sea" gives the *exact same poem* every time. That's temperature = 0. Stochastic sampling (temperature > 0) gives variety and creativity. The ability to *sometimes* pick a less-obvious word is what makes language feel natural.
+
+```
+Deterministic (temp=0):   "The sea is vast and blue."  Every. Single. Time.
+Stochastic (temp=0.7):    "The ocean whispers ancient songs..."  (varied)
+```
+
+**Limitation 3: Doesn't explore well.** Because argmax always picks the action it currently thinks is best, the agent can get stuck. If it tried "right" once and got a bad reward, Q(right) goes negative. Now it *never* tries right again — even if that one bad experience was a fluke. Policy learning naturally explores because it samples from a distribution — low-probability actions still get tried occasionally.
+
+```
+Q-LEARNING                         POLICY LEARNING
+┌────────────────────────┐         ┌────────────────────────┐
+│ Must score EVERY action│         │ Outputs probs directly │
+│ Can't do continuous    │         │ Handles any action     │
+│ Same state = same act  │         │ Naturally stochastic   │
+│ Exploration is hard    │         │ Explores by sampling   │
+└────────────────────────┘         └────────────────────────┘
+      ↓                                   ↓
+  Good for: games with               Good for: robotics,
+  few discrete actions                continuous control,
+  (Atari, board games)                language models
+```
+
+> **Key insight:** Q-learning asks "which option is best?" and always picks it. Policy learning asks "what's the probability of each option?" and samples. Sampling means variety, exploration, and the ability to handle continuous and huge action spaces. For language models — which need creative, varied outputs across a 50,000-token vocabulary — policy learning is the natural fit.
+
+### Policy Gradient: Try Stuff, Keep What Works
+
+Policy gradient is the algorithm behind policy learning. The idea is almost too simple: run the policy, see what happens, make good actions more likely and bad actions less likely.
+
+No Q-table. No Bellman equation. Just: **try, evaluate, adjust.**
+
+The architecture is a single neural network that takes in the state and outputs action probabilities directly:
+
+```
+                                         ┌──────────────────┐
+                                    ┌──▶ │ P(a₁|s) = 0.9  ◀── │  ← most likely
+                                    │    └──────────────────┘
+┌───────────┐     ┌────────────┐    │    ┌──────────────────┐        ┌──────────┐
+│           │     │            │    ├──▶ │ P(a₂|s) = 0.1  ✗ │  ───▶  │ Sample:  │
+│  state s  │ ──▶ │  Deep NN   │ ───┤    └──────────────────┘        │ a = a₁   │
+│           │     │  (policy)  │    │    ┌──────────────────┐        └──────────┘
+└───────────┘     └────────────┘    └──▶ │ P(a₃|s) = 0.0  ✗ │
+                                         └──────────────────┘
+                                                  ↑
+                                         All probabilities sum to 1
+
+Compare with DQN (value learning):
+  DQN:              state → NN → Q-values → argmax → always same action
+  Policy gradient:  state → NN → probabilities → SAMPLE → stochastic action
+```
+
+The network's weights ARE the policy. Training adjusts these weights so that high-reward actions get higher probabilities. No intermediate Q-values — the output is the decision.
+
+```
+EPISODE 1 (good outcome, return = +0.98):
+
+  (0,0) policy: P(up)=.25 P(down)=.25 P(left)=.25 P(right)=.25
+  Sampled: right → reward -0.01
+
+  (0,1) policy: P(up)=.30 P(down)=.20 P(left)=.20 P(right)=.30
+  Sampled: down  → reward -0.01
+
+  (1,1) policy: P(up)=.25 P(down)=.25 P(left)=.25 P(right)=.25
+  Sampled: right → reward +1.00 (goal!)
+
+  Total return: +0.98 → GOOD episode
+  Update: increase P(right) at (0,0), P(down) at (0,1), P(right) at (1,1)
+```
+
+```
+EPISODE 2 (bad outcome, return = -2.04):
+
+  (0,0) Sampled: left  → hit wall
+  (0,0) Sampled: left  → hit wall again
+  ...kept wandering, never found goal.
+
+  Total return: -2.04 → BAD episode
+  Update: decrease P(left) at (0,0), decrease every action we took
+```
+
+```
+AFTER HUNDREDS OF EPISODES:
+
+  Actions that led to the goal:  very likely
+  Actions that led to walls:     very unlikely
+  The policy learned — without ever computing Q.
+```
+
+**The formula.** The policy gradient update has one equation:
+
+```
+∇J(θ) = E[ R * ∇log π(a|s) ]
+```
+
+Each piece has a plain meaning:
+
+```
+R              = how good was this episode? (total return)
+log π(a|s)     = how likely was the action I took?
+∇log π(a|s)    = direction to push weights to make that action MORE likely
+R * ∇log π(a|s)= scale by how good it went
+```
+
+The multiplication does all the work:
+
+```
+Good episode (R = +5):    push HARD → make these actions more likely
+Meh episode  (R = +0.1):  push a little → barely change anything
+Bad episode  (R = -3):    negative R FLIPS the gradient
+                          → makes these actions LESS likely
+```
+
+Visualize the policy parameters as a position on a landscape. Expected reward is the height. Policy gradient computes the slope and walks uphill:
+
+```
+Expected                    ★ ← optimal policy
+Reward    ╱‾‾‾‾‾‾‾‾‾╲
+  ↑      ╱            ╲
+  │     ╱              ╲
+  │    ╱                ╲
+  │   •→                      • = current policy
+  │    gradient says:         → = "move this way to
+  │    "go right"                  increase reward"
+  └─────────────────────→
+      policy parameters θ
+```
+
+**Why this formulation is powerful:**
+
+**1. Handles both discrete and continuous actions.** For discrete actions (maze directions, vocabulary tokens), the network outputs one probability per option. For continuous actions (steering angle, force), the network outputs the **shape of a bell curve** — a mean and standard deviation — and you sample a number from it.
+
+```
+Discrete: "Which direction?"
+  Network outputs: P(left)=0.1  P(right)=0.6  P(up)=0.2  P(down)=0.1
+  Sample → right
+
+Continuous: "How many degrees to turn the wheel?"
+  Network outputs: mean = 23.5°, std = 2.0°
+  This defines a bell curve:
+           ╱╲
+          ╱  ╲
+         ╱    ╲
+        ╱      ╲
+    ───╱────────╲───
+      19   23.5   28
+            ↑
+         most likely value
+  Sample → 24.1°
+```
+
+Q-learning can't do this — it needs to `argmax` over every possible action. You can't argmax over infinite steering angles. Policy gradient just outputs curve parameters and samples.
+
+**2. Built-in exploration that fades naturally.** Because you're *sampling* from a distribution, the agent automatically explores. Early in training, the distribution is spread out (high uncertainty) — the agent tries diverse actions. As it learns, the distribution narrows (low uncertainty) — actions become precise. The network *learns its own confidence*.
+
+```
+Early training (exploring):
+  Discrete:   [0.25, 0.25, 0.25, 0.25]  → could pick anything
+  Continuous: mean=23°, std=15°
+              ╱────────────────╲          Wide. Tries 0° to 45°.
+          ───╱──────────────────╲───
+
+Late training (confident):
+  Discrete:   [0.95, 0.02, 0.02, 0.01]  → almost always picks action 1
+              but 5% of the time tries others (still exploring a little!)
+  Continuous: mean=23.5°, std=0.5°
+                      ╱╲                  Narrow. Consistently ~23.5°.
+          ───────────╱──╲───────────
+```
+
+No special exploration strategy needed. Q-learning, by contrast, always picks the argmax — it *never* explores unless you add a hack (like epsilon-greedy: "pick a random action 10% of the time").
+
+**3. Directly optimizes what you care about.** Q-learning optimizes Q-values and *hopes* good actions follow. Policy gradient optimizes the expected reward directly. No middleman.
+
+**4. End-to-end differentiable.** Standard neural network. Gradient flows from reward straight to policy weights. Normal backprop.
+
+**A concrete example: training a self-driving car.** The car drives down a road. At each moment it makes a steering decision. Eventually it either stays on the road (good) or crashes (bad). Let's trace one episode:
+
+```
+THE CAR'S JOURNEY:
+
+  ● Step 1: steered slightly right   → on the road ✓   ┐
+  ● Step 2: steered slightly left    → on the road ✓   ├── green zone (good)
+  ● Step 3: steered right            → on the road ✓   ┘
+  ● Step 4: steered hard right       → drifting off...  ┐
+  ● Step 5: steered hard right       → off the road     ├── red zone (bad)
+  ● Step 6: steered right            → CRASH 💥          ┘
+
+  Total reward: negative
+```
+
+After this episode, policy gradient looks at each action:
+
+```
+UPDATE:
+  Steps 1-3 (kept car on road):  INCREASE probability of those steering actions
+  Steps 4-6 (caused crash):     DECREASE probability of those steering actions
+
+  At step 4's state: P(hard right) goes DOWN
+  → next time the car approaches that curve, it won't steer so aggressively
+```
+
+The full training algorithm:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  POLICY GRADIENT TRAINING ALGORITHM                         │
+│                                                             │
+│  1. Initialize agent        → random policy, car swerves    │
+│  2. Run policy to end       → car drives until crash/done   │
+│  3. Record everything       → every state, action, reward   │
+│  4. Bad actions → less likely  (negative return flips grad) │
+│  5. Good actions → more likely (positive return scales grad)│
+│  6. Go to step 2, repeat                                    │
+│                                                             │
+│  Episode 1:    random swerving, crashes immediately         │
+│  Episode 10:   survives a few seconds, crashes at curve     │
+│  Episode 100:  makes it past the curve, crashes later       │
+│  Episode 1000: drives smoothly, rarely crashes              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+This maps directly to LLMs:
+
+```
+Car:  drove a path  → crashed → decrease P(those steering actions)
+LLM:  generated text → low reward → decrease P(those tokens)
+
+Car:  drove a path  → stayed on road → increase P(those steering actions)
+LLM:  generated text → high reward   → increase P(those tokens)
+```
+
+**The catch: high variance.** Policy gradient depends on *sampled* episodes. Two runs from the same state can give wildly different returns:
+
+```
+Episode 1: went right → got lucky  → return +10  → "RIGHT IS AMAZING"
+Episode 2: went right → got unlucky → return -5   → "RIGHT IS TERRIBLE"
+
+Same action, same state, opposite signals.
+One episode is not enough — you need many to average out the noise.
+```
+
+This is why raw policy gradient (called REINFORCE) is slow and unstable. You need thousands of episodes for a reliable signal. More advanced algorithms like PPO (Proximal Policy Optimization) fix this by adding clipping and baselines to reduce variance — but the core idea remains the same.
+
+> **Key insight:** Policy gradient is beautifully direct — try actions, see what happens, reinforce what works. The reward scales the gradient: good outcomes push actions to be more likely, bad outcomes push them to be less likely. For LLMs, this means: generate a response, score it, and nudge the model so high-scoring token sequences become more probable.
+
 ---
 
 ## Mapping RL to Language Models
@@ -454,10 +723,57 @@ SFT policy:   P(next_token | tokens_so_far) — trained on examples
 RLHF policy:  P(next_token | tokens_so_far) — optimized for reward
 ```
 
-One key difference from typical RL: the reward comes at the **end**, not at every step. The reward model scores the complete response — it doesn't give token-by-token feedback. This makes the credit assignment problem harder: if the response scores poorly, which token was the mistake? PPO handles this, which we'll cover in the next section.
+One key difference from typical RL: the reward comes at the **end**, not at every step. The model generates a complete response, and *then* it gets scored. This makes the credit assignment problem harder: if the response scores poorly, which token was the mistake? This is one of the core challenges that RLHF algorithms need to solve.
 
 > **Key insight:** A language model is already an RL agent — it has a state (context), actions (tokens), and a policy (its output distribution). RLHF just adds the missing piece: a reward signal that captures *quality*, not just *correctness*.
 
 ---
 
-*Next up: the Reward Model — how to train a neural network that scores responses based on human preferences.*
+## Summary: RL Concepts You Need for RLHF
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    RL FUNDAMENTALS CHEAT SHEET                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Agent-Environment Loop                                         │
+│    Agent observes state → picks action → gets reward → repeat   │
+│                                                                 │
+│  Policy π(a|s)                                                  │
+│    The agent's strategy: given a state, probability of          │
+│    each action. An LLM's output distribution IS a policy.       │
+│                                                                 │
+│  Return (cumulative reward)                                     │
+│    Total reward over an episode, not just one step.             │
+│    Captures consequences, not just immediate results.           │
+│                                                                 │
+│  Discounted Return (γ)                                          │
+│    Future rewards count less. γ close to 1 = far-sighted.       │
+│    For LLMs, γ = 1 (every token matters equally).               │
+│                                                                 │
+│  Q-function Q(s, a)                                             │
+│    "If I'm here and do this, what total reward do I expect?"    │
+│    A learned prediction, not a fact. Refined over episodes.     │
+│                                                                 │
+│  Bellman Equation                                               │
+│    Q(s,a) = immediate reward + γ * best Q of next state.        │
+│    Only looks one step ahead. Bootstraps from own estimates.    │
+│                                                                 │
+│  Value Learning vs Policy Learning                              │
+│    Value: learn Q, pick argmax. Deterministic, can't do         │
+│           continuous actions, poor exploration.                  │
+│    Policy: learn π directly, sample from it. Stochastic,        │
+│            handles any action space, explores naturally.         │
+│    LLMs use policy learning — they already ARE policies.        │
+│                                                                 │
+│  Policy Gradient                                                │
+│    Try actions → see results → good outcome? increase P.        │
+│    Bad outcome? decrease P. Reward scales the update.           │
+│    High variance → needs many episodes or smarter algorithms.   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+These are the building blocks. With this foundation, you can understand how RLHF trains language models: a **reward model** scores responses based on human preferences, and a **policy gradient algorithm** (like PPO) nudges the language model toward higher-scoring outputs — reinforcing the good, suppressing the bad, one episode at a time.
+
+*Next up: the Reward Model — how to train a neural network that learns human preferences.*
