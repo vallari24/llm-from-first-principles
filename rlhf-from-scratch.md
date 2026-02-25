@@ -88,15 +88,26 @@ A random policy picks uniformly — 25% chance for each direction. A good policy
 
 The entire goal of RL is to find a good policy. Everything else is machinery for getting there.
 
-### Total Reward: The Return
+### Why Cumulative Reward? The Return
 
-The agent doesn't just want reward *now* — it wants to maximize the **total reward** (called the **return**) over the whole episode.
+The agent doesn't just want reward *now* — it wants to maximize the **total reward** (called the **return**) over the whole episode. The return is a cumulative sum:
 
 ```
 G_t = r_{t+1} + r_{t+2} + r_{t+3} + ... + r_T
 ```
 
-For the maze robot: you don't just want to avoid the nearest wall, you want to reach the exit. A greedy agent that only maximizes immediate reward might walk in circles avoiding walls but never reaching the goal.
+Why cumulative? Because a single action isn't the end of the story. Consider:
+
+```
+The agent is at position A. It goes right to B. Then from B, down to the Goal.
+
+Step 1: A → right → B     immediate reward: -0.01 (step cost)
+Step 2: B → down  → Goal  immediate reward: +1.00 (goal!)
+
+Total return from A = -0.01 + 1.00 = 0.99
+```
+
+If you only looked at the immediate reward, "go right" looks bad (-0.01). But the total return reveals the truth: going right *leads to the goal*. An agent that only maximizes immediate reward might walk in circles avoiding walls but never reaching the exit. The cumulative sum captures **consequences**, not just the immediate result.
 
 ### Discounted Return: Why Future Rewards Count Less
 
@@ -106,13 +117,21 @@ In practice, we don't weight all future rewards equally. We discount them with a
 G_t = r_{t+1} + γ * r_{t+2} + γ² * r_{t+3} + ... + γ^(T-t-1) * r_T
 ```
 
+Using the same example with γ = 0.9:
+
+```
+From A: -0.01 + 0.9 * (1.00) = 0.89
+Instead of 0.99, the goal reward is slightly faded because it's one step away.
+
+If the goal were 10 steps away: 0.9^10 * 1.00 = 0.35
+The further the reward, the less the agent cares.
+```
+
 Why discount? Three reasons:
 
 1. **Uncertainty.** The further out you look, the less sure you are about what will happen. A reward 100 steps from now might never materialize.
 2. **Mathematical convenience.** Without discounting, the return can be infinite for tasks that never end. Discounting guarantees the sum converges.
 3. **It matches real preferences.** Humans prefer $100 today over $100 next year. Agents should too.
-
-With γ = 0.99, a reward 100 steps away is worth 0.99^100 ≈ 0.37 of its face value. With γ = 0.9, that same reward is worth 0.9^100 ≈ 0.00003 — practically nothing. Gamma controls the agent's "planning horizon."
 
 ```
 γ close to 1  → far-sighted agent, plans long-term
@@ -134,6 +153,185 @@ The expectation is over two sources of randomness: the policy (which may choose 
 
 That's the entire RL problem in one line. Everything — Q-learning, policy gradients, PPO — is a different algorithm for approximately solving this optimization.
 
+### The Q-Function: Rating State-Action Pairs
+
+The objective says "maximize expected return." But how does an agent actually *decide* which action to take? It needs a way to evaluate: "If I'm in this state and take this action, how good is that?" That's the **Q-function**.
+
+```
+Q(s_t, a_t) = E[ G_t | s_t, a_t ]
+```
+
+Q(s, a) answers one question: "If I'm in state *s* and take action *a*, what total discounted reward do I expect to get from here until the end?"
+
+**"Future reward" means: what actually happened after this step.** During training, the agent takes an action, then keeps playing, and *eventually* the episode ends. You sum up all the rewards that came after. That's the "future" part — it's not a mystery, it's just what happened next. The tricky part is that the agent needs to *predict* this sum *before* taking the action, based on what happened in previous episodes.
+
+Let's trace how Q gets built, starting from nothing.
+
+**Episode 1 — the agent knows nothing.** All Q-values are zero. Every action looks equally good (or bad). The agent picks randomly.
+
+```
+Episode 1 Q-table (knows nothing):
+                  up     down    left    right
+position (0,0):  [0.0    0.0     0.0     0.0  ]
+position (0,1):  [0.0    0.0     0.0     0.0  ]
+position (1,2):  [0.0    0.0     0.0     0.0  ]
+position (2,3):  [0.0    0.0     0.0     0.0  ]
+...every cell is zero. The agent wanders randomly.
+```
+
+It stumbles around. Goes right, gets -0.01. Goes down, gets -0.01. Hits a wall, gets -1. Maybe after many random steps it accidentally reaches the goal, gets +1. Now it updates: the cell *right next to the goal* gets a slightly positive Q-value for "move toward goal." Everything else is still mostly zero.
+
+**Episode 100 — the agent has experience.** The cells near the goal have high Q-values (the agent knows how to get there from nearby). Cells near walls have negative Q-values. The agent has learned the landscape.
+
+```
+Episode 100 Q-table (has learned):
+                  up     down    left    right
+position (0,0):  [0.1    0.3     0.0     0.2  ]  ← "down seems good from here"
+position (1,2):  [-0.5   0.1     0.2    -0.8  ]  ← "don't go right, wall there"
+position (2,3):  [0.1    0.0     0.1     0.9  ]  ← "go right! goal is there!"
+```
+
+The learning spreads backward from the goal like a wave. First the cells adjacent to the goal learn good Q-values. Then the cells adjacent to *those*. Then the next ring out.
+
+```
+Episode 1:    Only the cell before the goal has a useful Q-value
+Episode 10:   Cells 2-3 steps from goal are learning
+Episode 100:  Most of the maze has reasonable Q-values
+Episode 1000: Q-values are well-calibrated everywhere
+```
+
+**How many episodes?** It depends on the problem. A 4x4 maze might need ~100. Atari games need millions. The harder the environment, the more episodes to build good estimates. In practice, you train until the Q-values stop changing much (convergence).
+
+**Why greedy on immediate reward fails.** Say position (1,1) has: going up gives immediate reward -0.2 (step penalty, rough terrain), going down gives +0.2 (bonus tile). A greedy agent always picks down. But going up leads through rough terrain toward the goal (total return: +5.0), while going down leads to a dead end (total return: +0.2, then stuck). Q captures the full picture — Q(up) = 5.0 despite the immediate -0.2.
+
+**The Bellman equation: how Q is actually computed.** You don't literally need to play thousands of episodes from each position. There's a recursive shortcut:
+
+```
+Q(s, a) = r + γ * max_a' Q(s', a')
+
+"The value of doing a in state s =
+    the immediate reward I get
+    + the discounted value of the best thing I can do next"
+```
+
+You start with all zeros and keep applying this equation. Each update pulls information from neighboring cells. The update after hitting a wall: Q(pos, right) was 0.0, now it shifts toward -1.0. Next time the agent is here, it knows: don't go right.
+
+**Once you have Q, the optimal policy is trivial:** in any state, pick the action with the highest Q-value.
+
+```
+π*(s) = argmax_a Q(s, a)
+
+"In this state, which action has the best expected future?"
+```
+
+**Q as a table vs. a neural network.** For small problems like our 4x4 maze, Q is literally a table — one row per state, one column per action. But for large problems (chess has ~10^43 states, a language model has effectively infinite states), a table is impossible. Instead, you use a **neural network** that takes in the state and outputs Q-values. Same idea, but the network *generalizes* — it estimates Q for states it's never seen, based on similar states it has.
+
+```
+Small problem (maze):  Q-table    (direct lookup)
+Large problem (chess): Q-network  (neural net approximating the table)
+LLMs:                  Skip Q entirely — PPO optimizes the policy directly
+```
+
+> **Key insight:** Q is not knowledge of the future — it's a *learned prediction* about the future, refined through experience. During training, the agent plays episodes and sees what actually happens. Q averages those outcomes. At decision time, Q tells the agent "based on everything I've seen, going right from here tends to work out well." It's a prediction, not a fact — but with enough episodes, it's a very good one.
+
+### Two Families of RL: Value Learning vs. Policy Learning
+
+We know the goal: find the best action in every state. There are two fundamentally different strategies to get there.
+
+```
+┌─────────────────────────────────┐   ┌─────────────────────────────────┐
+│        VALUE LEARNING           │   │        POLICY LEARNING          │
+│                                 │   │                                 │
+│   Learn to EVALUATE options     │   │   Learn to ACT directly        │
+│                                 │   │                                 │
+│   Step 1: Learn Q(s, a)        │   │   Step 1: Learn π(s)           │
+│           "score every option"  │   │           "what should I do?"  │
+│                                 │   │                                 │
+│   Step 2: a = argmax Q(s, a)   │   │   Step 2: a ~ π(s)            │
+│           "pick the best score" │   │           "sample from policy" │
+│                                 │   │                                 │
+│   Examples: Q-learning, DQN    │   │   Examples: REINFORCE, PPO     │
+└─────────────────────────────────┘   └─────────────────────────────────┘
+```
+
+**Value learning** is the indirect approach. The agent never explicitly learns "what to do." It learns "how good is each option?" — that's Q. Then at decision time, it just picks the highest-scoring option. It's like a restaurant critic who scores every dish, then orders the highest-rated one.
+
+**Policy learning** is the direct approach. The agent learns a function that maps states straight to action probabilities. No scoring, no Q-table. You ask "what should I do?" and the network outputs a distribution. Sample from it. It's like a chef who *knows* what to cook — no menu needed.
+
+Let's see how each one plays out in the maze:
+
+```
+VALUE LEARNING (Q-learning):
+
+The agent at (1,1) consults its Q-table:
+┌──────────────────────────────┐
+│  Q((1,1), up)    = 0.7  ★   │  ← highest score
+│  Q((1,1), down)  = 0.3      │
+│  Q((1,1), left)  = 0.1      │
+│  Q((1,1), right) = -0.2     │
+└──────────────────────────────┘
+Pick argmax → go up.
+
+What was learned: a SCORE for every action.
+How to decide: pick the action with the best score.
+```
+
+```
+POLICY LEARNING (policy gradient):
+
+The agent at (1,1) consults its policy network:
+┌──────────────────────────────┐
+│  π((1,1), up)    = 0.60  ★  │  ← highest probability
+│  π((1,1), down)  = 0.25     │
+│  π((1,1), left)  = 0.10     │
+│  π((1,1), right) = 0.05     │
+└──────────────────────────────┘
+Sample from distribution → most likely go up.
+
+What was learned: a PROBABILITY for every action.
+How to decide: sample from the distribution.
+```
+
+Both end up going up — but the reasoning is different. Value learning says "up has the best score." Policy learning says "up has the highest probability." The end result is similar, but the path to get there matters.
+
+**Why does this distinction matter for LLMs?**
+
+A language model *already is* a policy. It takes tokens in (state) and outputs a probability distribution over the next token (action). That's π(s). It's already doing policy learning.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  "The cat sat on the ___"                               │
+│        ↓                                                │
+│  ┌───────────┐                                          │
+│  │    LLM    │  ← this IS π(s)                          │
+│  └─────┬─────┘                                          │
+│        ↓                                                │
+│  P("mat")  = 0.35  ★                                    │
+│  P("dog")  = 0.12                                       │
+│  P("roof") = 0.08                                       │
+│  P("the")  = 0.06                                       │
+│  ...50,000 more tokens...                               │
+│                                                         │
+│  The model outputs action probabilities directly.       │
+│  No Q-table needed. The model IS the policy.            │
+└─────────────────────────────────────────────────────────┘
+```
+
+If you tried value learning for an LLM, you'd need to learn Q(tokens_so_far, next_token) for every possible token at every possible context — and the vocabulary is 50,000+ tokens with effectively infinite possible contexts. Why build a separate scoring system when you already have a network that outputs action probabilities?
+
+```
+Value learning for LLMs:  Build Q-network → score 50k tokens → pick max
+                          (wasteful — you already have a model that picks tokens)
+
+Policy learning for LLMs: Take existing model → nudge toward higher reward
+                          (natural — the model IS the policy, just improve it)
+```
+
+This is why RLHF uses **PPO** (a policy learning algorithm). PPO takes the existing language model, generates responses, scores them with the reward model, and nudges the policy so that high-reward responses become more likely. No Q-table, no separate scoring network — just direct improvement of the policy you already have.
+
+> **Key insight:** Value learning and policy learning solve the same problem via different strategies. Value learning asks "how good is each option?" and picks the best. Policy learning asks "what should I do?" directly. Language models are natural policies — they already output action probabilities — which is why RLHF uses policy learning (PPO) rather than value learning (Q-learning).
+
 ---
 
 ## Mapping RL to Language Models
@@ -150,6 +348,8 @@ Here's where it clicks. When you apply RL to a language model, the abstract conc
 │  Action (a_t)       │  Choosing the next token          │
 │  Policy π(a|s)      │  The model's output distribution  │
 │  Reward             │  Score from the reward model      │
+│  Q(s, a)            │  "How good is generating token a  │
+│                     │   given the tokens so far?"       │
 │  Episode            │  Generating one complete response │
 └─────────────────────┴──────────────────────────────────┘
 ```
