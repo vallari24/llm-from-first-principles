@@ -29,3 +29,15 @@ nanoGPT/
 # Local-only notes
 blog.md
 post-training-roadmap.md
+
+# Local-only files (kept off remote)
+README.md
+fine-tuning-in-production.md
+llm-concepts-for-devs.md
+llm-mental-models.md
+llms-in-recommendations.md
+sft-from-scratch-builder.md
+sft-from-scratch.md
+linkedin-post-minigpt.md
+diagrams/
+scripts/
